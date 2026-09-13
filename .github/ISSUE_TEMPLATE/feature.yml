@@ -1,0 +1,9 @@
+name: Feature proposal
+description: Propose a capability consistent with Orbit's Core boundaries.
+body:
+  - type: textarea
+    attributes:
+      label: Problem and proposed boundary
+      description: Explain ownership, contract, and why this belongs in Core, an adapter, or a plugin.
+    validations:
+      required: true

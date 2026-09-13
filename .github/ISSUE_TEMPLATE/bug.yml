@@ -1,0 +1,9 @@
+name: Bug report
+description: Report reproducible incorrect behavior in Orbit Core.
+body:
+  - type: textarea
+    attributes:
+      label: Reproduction
+      description: Include a minimal reproducer and expected versus actual behavior.
+    validations:
+      required: true
