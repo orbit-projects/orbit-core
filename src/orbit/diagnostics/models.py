@@ -13,7 +13,7 @@
 # limitations under the License.
 """Payload-free runtime diagnostics and telemetry extension contracts."""
 
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,11 +23,20 @@ from orbit.application.models import ApplicationSummary
 class RequestRecord(BaseModel):
     """Request outcome without raw URL, credentials, request body or event payload."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
     request_id: str
     method: str
     status: int = Field(ge=100, le=599)
     duration_seconds: float = Field(ge=0)
+    outcome: Literal["completed", "failed", "cancelled", "disconnected"] = "completed"
+
+
+class LatencyBucket(BaseModel):
+    """Cumulative request durations at or below a fixed upper bound, in seconds."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+    upper_bound: float = Field(gt=0)
+    count: int = Field(ge=0)
 
 
 class TelemetrySink(Protocol):
@@ -46,6 +55,10 @@ class DiagnosticSnapshot(BaseModel):
     error_count: int = 0
     duration_seconds: float = 0
     recent_requests: tuple[RequestRecord, ...] = ()
+    latency_buckets: tuple[LatencyBucket, ...] = ()
+    status_counts: dict[int, int] = Field(default_factory=dict)
+    cancelled_count: int = 0
+    disconnected_count: int = 0
 
 
-__all__ = ["DiagnosticSnapshot", "RequestRecord", "TelemetrySink"]
+__all__ = ["DiagnosticSnapshot", "LatencyBucket", "RequestRecord", "TelemetrySink"]

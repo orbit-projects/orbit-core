@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
+import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from orbit.asgi.application import ASGIApplication
 from orbit.asgi.request import Headers
@@ -49,34 +50,41 @@ class TestClient:
 
     __test__ = False
 
-    def __init__(self, application: ASGIApplication) -> None:
+    def __init__(self, application: ASGIApplication, *, lifespan_timeout: float = 60) -> None:
+        if not math.isfinite(lifespan_timeout) or lifespan_timeout <= 0:
+            raise ValueError("lifespan_timeout must be finite and positive.")
         self.application = application
+        self._timeout = lifespan_timeout
+        self._active = False
         self._incoming: asyncio.Queue[Message] = asyncio.Queue()
         self._outgoing: asyncio.Queue[Message] = asyncio.Queue()
         self._lifespan: asyncio.Task[None] | None = None
 
     async def __aenter__(self) -> TestClient:
+        if self._lifespan is not None:
+            raise RuntimeError("TestClient is single-use; construct a new client and application.")
         self._lifespan = asyncio.create_task(
             self.application({"type": "lifespan"}, self._incoming.get, self._outgoing.put)
         )
         await self._incoming.put({"type": "lifespan.startup"})
         try:
-            async with asyncio.timeout(60):
-                response = await self._outgoing.get()
+            response = await self._wait_lifespan()
             if response["type"] != "lifespan.startup.complete":
                 raise RuntimeError(response.get("message", "Startup failed."))
         except BaseException:
             self._lifespan.cancel()
             await asyncio.gather(self._lifespan, return_exceptions=True)
             raise
+        self._active = True
         return self
 
     async def __aexit__(self, *exc: object) -> None:
         assert self._lifespan is not None
+        self._active = False
         await self._incoming.put({"type": "lifespan.shutdown"})
         try:
-            async with asyncio.timeout(60):
-                response = await self._outgoing.get()
+            async with asyncio.timeout(self._timeout):
+                response = await self._wait_lifespan()
                 await self._lifespan
             if response["type"] != "lifespan.shutdown.complete":
                 raise RuntimeError(response.get("message", "Shutdown failed."))
@@ -85,11 +93,36 @@ class TestClient:
                 self._lifespan.cancel()
                 await asyncio.gather(self._lifespan, return_exceptions=True)
 
+    async def _wait_lifespan(self) -> Message:
+        assert self._lifespan is not None
+        message = asyncio.create_task(self._outgoing.get())
+        try:
+            async with asyncio.timeout(self._timeout):
+                await asyncio.wait((message, self._lifespan), return_when=asyncio.FIRST_COMPLETED)
+                if message.done():
+                    return message.result()
+                if not self._outgoing.empty():
+                    return self._outgoing.get_nowait()
+                await self._lifespan
+                raise RuntimeError("Lifespan ended without a protocol acknowledgement.")
+        finally:
+            if not message.done():
+                message.cancel()
+            await asyncio.gather(message, return_exceptions=True)
+
     async def request(
-        self, method: str, path: str, *, body: bytes = b"", headers: Mapping[str, str] | None = None
+        self,
+        method: str,
+        path: str,
+        *,
+        body: bytes = b"",
+        headers: Mapping[str, str] | Sequence[tuple[str, str]] | None = None,
     ) -> TestResponse:
         """Send a complete buffered HTTP request and verify response framing."""
+        if not self._active:
+            raise RuntimeError("Send requests inside the TestClient context manager.")
         url = urlsplit(path)
+        pairs = headers.items() if isinstance(headers, Mapping) else (headers or ())
         messages: list[Message] = []
         received = False
 
@@ -101,24 +134,37 @@ class TestClient:
             return {"type": "http.request", "body": body, "more_body": False}
 
         async def send(message: Message) -> None:
+            if not messages:
+                if message["type"] != "http.response.start":
+                    raise AssertionError("Response body preceded response start.")
+            else:
+                if message["type"] != "http.response.body":
+                    raise AssertionError("Unexpected response frame or duplicate response start.")
+                if messages[-1]["type"] == "http.response.body" and not messages[-1].get(
+                    "more_body", False
+                ):
+                    raise AssertionError("Response frame followed the final body.")
             messages.append(message)
 
         await self.application(
             {
                 "type": "http",
                 "asgi": {"version": "3.0"},
-                "method": method,
-                "path": url.path,
+                "method": method.upper(),
+                "path": unquote(url.path or "/", encoding="utf-8", errors="strict"),
+                "raw_path": (url.path or "/").encode("utf-8"),
+                "scheme": url.scheme or "http",
+                "http_version": "1.1",
                 "root_path": "",
                 "query_string": url.query.encode(),
-                "headers": [(k.encode(), v.encode()) for k, v in (headers or {}).items()],
+                "headers": [(k.encode("latin-1"), v.encode("latin-1")) for k, v in pairs],
             },
             receive,
             send,
         )
         if not messages or messages[0]["type"] != "http.response.start":
             raise AssertionError("ASGI application did not start a response.")
-        if messages[-1].get("more_body", False):
+        if messages[-1]["type"] != "http.response.body" or messages[-1].get("more_body", False):
             raise AssertionError("ASGI response stream did not finish.")
         return TestResponse(
             messages[0]["status"],

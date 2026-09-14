@@ -23,14 +23,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import AsyncIterator, Awaitable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from types import MappingProxyType
 
 from orbit.admin.contracts import AdminContribution
 from orbit.config import ApplicationConfig, Config
 from orbit.container import Container
 from orbit.diagnostics.diagnostics import Diagnostics
+from orbit.errors import ErrorCategory, LifecycleError, OrbitProblem
 from orbit.events import Event, EventBus
 from orbit.health import HealthReport, HealthService, HealthStatus
 from orbit.lifecycle import Lifecycle
@@ -45,6 +47,7 @@ from orbit.state import ApplicationState, State, StateStore
 from orbit.state.models import ComponentState
 
 _LOG = logging.getLogger(__name__)
+_operations: ContextVar[tuple[Application, ...]] = ContextVar("orbit_operations", default=())
 
 
 class Application:
@@ -52,7 +55,7 @@ class Application:
 
     def __init__(self, config: ApplicationConfig) -> None:
         self.config = Config(config)
-        self.container = Container()
+        self.container = Container(cleanup_timeout=config.lifecycle_timeout)
         self.events = EventBus(timeout=config.lifecycle_timeout)
         self.lifecycle = Lifecycle()
         self.services = ServiceRegistry()
@@ -64,6 +67,8 @@ class Application:
         self.state = State(self._store)
         self._entered: list[ServiceContract] = []
         self._service_phases: dict[str, Phase] = {}
+        self._service_health: dict[str, HealthStatus] = {}
+        self._health_task: asyncio.Task[HealthReport] | None = None
         self._lock = asyncio.Lock()
         self._cleaned = False
         self.container.register_instance(Application, self)
@@ -120,68 +125,79 @@ class Application:
 
     async def configure(self) -> None:
         """Compose plugins, freeze registrations and configure services transactionally."""
-        async with self._lock:
-            self.lifecycle.require(Phase.CREATED)
-            try:
-                self.plugins.setup(self)
-                self.validate()
-                self.services.freeze()
-                self.container.freeze()
-                self.config.freeze()
-                self.router.freeze()
-                for service in self.services.ordered():
-                    self._entered.append(service)
-                    await self._call(service.configure())
-                    self._service_phases[service.descriptor.name] = Phase.CONFIGURED
-                await self.lifecycle.transition(Phase.CONFIGURED)
-            except BaseException:
-                await self._abort()
-                raise
+        await self._execute(self._configure)
+
+    async def _configure(self) -> None:
+        self.lifecycle.require(Phase.CREATED)
+        try:
+            self.plugins.setup(self)
+            self.validate()
+            self.services.freeze()
+            self.container.freeze()
+            self.config.freeze()
+            self.router.freeze()
+            for service in self.services.ordered():
+                self._entered.append(service)
+                await self._call(service.configure())
+                self._service_phases[service.descriptor.name] = Phase.CONFIGURED
+            await self.lifecycle.transition(Phase.CONFIGURED)
+        except BaseException:
+            await self._abort()
+            raise
 
     async def initialize(self) -> None:
         """Activate plugins and initialize service resources; rollback on any failure."""
-        async with self._lock:
-            self.lifecycle.require(Phase.CONFIGURED)
-            try:
-                await self.plugins.activate(self.config.application.lifecycle_timeout)
-                for service in self.services.ordered():
-                    await self._call(service.initialize())
-                    self._service_phases[service.descriptor.name] = Phase.INITIALIZED
-                await self.lifecycle.transition(Phase.INITIALIZED)
-            except BaseException:
-                await self._abort()
-                raise
+        await self._execute(self._initialize)
+
+    async def _initialize(self) -> None:
+        self.lifecycle.require(Phase.CONFIGURED)
+        try:
+            await self.plugins.activate(self.config.application.lifecycle_timeout)
+            for service in self.services.ordered():
+                await self._call(service.initialize())
+                self._service_phases[service.descriptor.name] = Phase.INITIALIZED
+            await self.lifecycle.transition(Phase.INITIALIZED)
+        except BaseException:
+            await self._abort()
+            raise
 
     async def start(self) -> None:
         """Start services dependency-first; readiness follows a current health check."""
-        async with self._lock:
-            self.lifecycle.require(Phase.INITIALIZED)
-            try:
-                await self.lifecycle.transition(Phase.STARTING)
-                for service in self.services.ordered():
-                    self._service_phases[service.descriptor.name] = Phase.STARTING
-                    await self._call(service.start())
-                    self._service_phases[service.descriptor.name] = Phase.RUNNING
-                await self.lifecycle.transition(Phase.RUNNING)
-                await self.health()
-            except BaseException:
-                await self._abort()
-                raise
+        await self._execute(self._start)
+
+    async def _start(self) -> None:
+        self.lifecycle.require(Phase.INITIALIZED)
+        try:
+            await self.lifecycle.transition(Phase.STARTING)
+            for service in self.services.ordered():
+                self._service_phases[service.descriptor.name] = Phase.STARTING
+                await self._call(service.start())
+                self._service_phases[service.descriptor.name] = Phase.RUNNING
+            await self.lifecycle.transition(Phase.RUNNING)
+            await self.health()
+        except BaseException:
+            await self._abort()
+            raise
 
     async def startup(self) -> None:
         """Run the complete startup sequence; intended for the runtime/ASGI host."""
-        await self.configure()
-        await self.initialize()
-        await self.start()
+        await self._execute(self._startup)
+
+    async def _startup(self) -> None:
+        await self._configure()
+        await self._initialize()
+        await self._start()
 
     async def stop(self) -> None:
         """Stop all entered components, even after partial startup; idempotent after cleanup."""
-        async with self._lock:
-            if self._cleaned:
-                return
-            failures = await self._finish_cleanup()
-            if failures:
-                raise ExceptionGroup("Application cleanup failed", failures)
+        await self._execute(self._stop)
+
+    async def _stop(self) -> None:
+        if self._cleaned:
+            return
+        failures = await self._finish_cleanup()
+        if failures:
+            raise ExceptionGroup("Application cleanup failed", failures)
 
     async def health(self) -> HealthReport:
         """Refresh health from current component checks; non-running applications are unready."""
@@ -189,13 +205,23 @@ class Application:
             return HealthReport(
                 status=HealthStatus.UNHEALTHY, message="Application is not running."
             )
+        if self._health_task is None or self._health_task.done():
+            self._health_task = asyncio.create_task(self._collect_health())
+        report = await asyncio.shield(self._health_task)
+        return report.model_copy(deep=True)
+
+    async def _collect_health(self) -> HealthReport:
         report = await HealthService().check(
             {s.descriptor.name: s for s in self.services.services},
             timeout=self.config.application.health_timeout,
         )
         # Shutdown may begin while checks are running.
         if self.lifecycle.phase is Phase.RUNNING:
+            self._service_health = {
+                name: HealthStatus(details["status"]) for name, details in report.details.items()
+            }
             self._store.update(health=report.status)
+            self._snapshot()
             return report
         return HealthReport(status=HealthStatus.UNHEALTHY, message="Application is stopping.")
 
@@ -207,6 +233,22 @@ class Application:
             yield self
         finally:
             await self.stop()
+
+    async def _execute(self, operation: Callable[[], Awaitable[None]]) -> None:
+        if self in _operations.get():
+            raise LifecycleError(
+                OrbitProblem(
+                    code="lifecycle.reentrant-operation",
+                    message="Lifecycle hooks and observers cannot initiate lifecycle operations.",
+                    category=ErrorCategory.LIFECYCLE,
+                )
+            )
+        async with self._lock:
+            token = _operations.set((*_operations.get(), self))
+            try:
+                await operation()
+            finally:
+                _operations.reset(token)
 
     async def _call(self, hook: Awaitable[None]) -> None:
         async with asyncio.timeout(self.config.application.lifecycle_timeout):
@@ -237,6 +279,9 @@ class Application:
         await self.lifecycle.transition(Phase.STOPPING)
         self._store.update(health=HealthStatus.UNHEALTHY)
         failures: list[Exception] = []
+        if self._health_task is not None and not self._health_task.done():
+            self._health_task.cancel()
+            await asyncio.gather(self._health_task, return_exceptions=True)
         while self._entered:
             service = self._entered.pop()
             name = service.descriptor.name
@@ -276,7 +321,13 @@ class Application:
             phase=self.lifecycle.phase,
             service_count=len(self.services.services),
             services=tuple(
-                ComponentState(name=name, phase=phase)
+                ComponentState(
+                    name=name,
+                    phase=phase,
+                    health=self._service_health.get(name, HealthStatus.UNKNOWN)
+                    if phase is Phase.RUNNING
+                    else HealthStatus.UNKNOWN,
+                )
                 for name, phase in self._service_phases.items()
             ),
             plugins=tuple(

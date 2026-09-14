@@ -20,18 +20,23 @@ health refresh requires orbit.admin.write and an explicit Authorization header.
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
+import logging
 from typing import TYPE_CHECKING
 
 from orbit.admin.models import AdminOverview
 from orbit.asgi.request import HTTPError, Request
 from orbit.asgi.response import Response
+from orbit.diagnostics.inspection import inspect_composition
 from orbit.security import require_roles
 from orbit.security.context import current_principal
 
 if TYPE_CHECKING:
     from orbit.application import Application
+
+_LOG = logging.getLogger(__name__)
 
 
 class AdminApplication:
@@ -63,30 +68,28 @@ class AdminApplication:
             return Response.json(report)
         if request.method not in {"GET", "HEAD"}:
             return Response(status=405, headers={"allow": "GET, HEAD"})
+        composition = inspect_composition(self._application).model_dump(mode="json")
         views: dict[str, object] = {
+            "/admin/lifecycle": [
+                transition.model_dump(mode="json")
+                for transition in self._application.lifecycle.history
+            ],
+            "/admin/health": {
+                "status": self._application.state.application.health,
+                "services": [
+                    {"name": state.name, "status": state.health}
+                    for state in self._application.state.application.services
+                ],
+            },
             "/admin/diagnostics": self._application.diagnostics.collect(
                 self._application
             ).model_dump(mode="json"),
             "/admin/state": overview.model_dump(mode="json"),
-            "/admin/config": self._application.config.inspect(),
-            "/admin/services": [
-                d.model_dump(mode="json") for d in self._application.services.descriptors
-            ],
-            "/admin/plugins": [
-                p.metadata.model_dump(mode="json") for p in self._application.plugins.plugins
-            ],
-            "/admin/routes": [
-                r.metadata.model_dump(mode="json") for r in self._application.router.routes
-            ],
-            "/admin/dependencies": [
-                {
-                    "key": str(key),
-                    "scope": provider.scope.value,
-                    "dependencies": [str(d) for d in provider.dependencies],
-                    "resource": provider.resource,
-                }
-                for key, provider in self._application.container.providers.items()
-            ],
+            "/admin/config": composition["configuration"],
+            "/admin/services": composition["services"],
+            "/admin/plugins": composition["plugins"],
+            "/admin/routes": composition["routes"],
+            "/admin/dependencies": composition["dependencies"],
             "/admin/events": [
                 {
                     "id": str(d.event_id),
@@ -107,7 +110,12 @@ class AdminApplication:
         for name, contribution in self._application.admin_contributions.items():
             path = "/admin/extensions/" + name
             if request.path in {"/admin", "/admin/", path}:
-                views[path] = (await contribution.inspect()).model_dump(mode="json")
+                try:
+                    async with asyncio.timeout(self._application.config.application.health_timeout):
+                        views[path] = (await contribution.inspect()).model_dump(mode="json")
+                except Exception:
+                    _LOG.exception("Administrative extension inspection failed")
+                    views[path] = {"status": "unavailable", "code": "admin.extension-failed"}
         if request.path in views:
             response = Response.json(views[request.path])
             return Response(

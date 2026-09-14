@@ -32,7 +32,10 @@ class HealthService:
         async def run(check: HealthCheck) -> HealthReport:
             try:
                 async with asyncio.timeout(timeout):
-                    return await check.health()
+                    report = await check.health()
+                    if not isinstance(report, HealthReport):
+                        raise TypeError("Health checks must return HealthReport.")
+                    return report
             except Exception:
                 _LOG.exception("Component health check failed")
                 return HealthReport(status=HealthStatus.UNHEALTHY, message="Health check failed.")

@@ -22,7 +22,10 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import re
+import sys
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -32,7 +35,7 @@ from rich.console import Console
 from orbit._version import __version__
 from orbit.application import Application
 from orbit.config import ApplicationConfig
-from orbit.diagnostics import Diagnostics
+from orbit.diagnostics.inspection import inspect_composition
 from orbit.errors import OrbitError
 from orbit.runtime import Runtime
 
@@ -49,6 +52,12 @@ def load_target(target: str) -> Application | Runtime:
             "Use module:attribute, for example examples.minimal.app:application."
         )
     module, attribute = target.split(":")
+    # Console entry points start with their bin directory on sys.path. Explicit local
+    # targets use the caller's working directory, as running an application script does.
+    # Keep it available for deferred imports made by application lifecycle hooks.
+    directory = str(Path.cwd())
+    if directory not in sys.path:
+        sys.path.insert(0, directory)
     try:
         value: Any = getattr(importlib.import_module(module), attribute)
     except (ImportError, AttributeError) as exc:
@@ -96,7 +105,42 @@ def check(target: str) -> None:
 def inspect_application(target: str) -> None:
     """Emit JSON describing a locally composed application; does not start a worker."""
     application = _application(target)
-    typer.echo(Diagnostics().collect(application).model_dump_json(indent=2))
+    typer.echo(application.diagnostics.collect(application).model_dump_json(indent=2))
+
+
+def _inspect_section(target: str, section: str) -> None:
+    snapshot = inspect_composition(_application(target))
+    typer.echo(json.dumps(snapshot.model_dump(mode="json")[section], indent=2))
+
+
+@app.command()
+def services(target: str) -> None:
+    """List locally registered services and their dependency identities as JSON."""
+    _inspect_section(target, "services")
+
+
+@app.command()
+def plugins(target: str) -> None:
+    """List registered plugin metadata without discovering or importing other plugins."""
+    _inspect_section(target, "plugins")
+
+
+@app.command()
+def routes(target: str) -> None:
+    """List registered routes, service ownership and required roles."""
+    _inspect_section(target, "routes")
+
+
+@app.command()
+def config(target: str) -> None:
+    """Print redacted application and extension configuration."""
+    _inspect_section(target, "configuration")
+
+
+@app.command()
+def dependencies(target: str) -> None:
+    """Inspect provider scopes and dependencies without constructing providers."""
+    _inspect_section(target, "dependencies")
 
 
 @app.command()

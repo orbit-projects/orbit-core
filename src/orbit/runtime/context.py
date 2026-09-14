@@ -20,6 +20,22 @@ if TYPE_CHECKING:
     from orbit.application import Application
 
 _application: ContextVar["Application | None"] = ContextVar("orbit_application", default=None)
+_request_id: ContextVar[str | None] = ContextVar("orbit_request_id", default=None)
+
+
+def current_request_id() -> str | None:
+    """Read the server-generated correlation ID in a handler, resource or middleware."""
+    return _request_id.get()
+
+
+def bind_request_id(request_id: str) -> Token[str | None]:
+    """Bind a request correlation ID and return its restoration token."""
+    return _request_id.set(request_id)
+
+
+def reset_request_id(token: Token[str | None]) -> None:
+    """Restore the context after response delivery and resource cleanup."""
+    _request_id.reset(token)
 
 
 def current_application() -> "Application | None":
@@ -37,4 +53,11 @@ def reset_application(token: Token["Application | None"]) -> None:
     _application.reset(token)
 
 
-__all__ = ["bind_application", "current_application", "reset_application"]
+__all__ = [
+    "bind_application",
+    "current_application",
+    "reset_application",
+    "bind_request_id",
+    "current_request_id",
+    "reset_request_id",
+]

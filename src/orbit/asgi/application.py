@@ -21,7 +21,7 @@ import logging
 from dataclasses import replace
 from functools import partial
 from time import monotonic
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -69,6 +69,7 @@ class ASGIApplication:
         self._middleware: list[Middleware] = []
         self._requests: set[asyncio.Task[Any]] = set()
         self._draining = False
+        self._shutdown_task: asyncio.Task[None] | None = None
 
     @property
     def router(self) -> Router:
@@ -82,6 +83,22 @@ class ASGIApplication:
 
     async def shutdown(self) -> None:
         """Reject new work, drain bounded requests, then close application resources."""
+        if asyncio.current_task() in self._requests:
+            raise RuntimeError("Request handlers cannot await runtime shutdown.")
+        if self._shutdown_task is None:
+            self._draining = True
+            self._shutdown_task = asyncio.create_task(self._shutdown())
+        cancelled = False
+        while not self._shutdown_task.done():
+            try:
+                await asyncio.shield(self._shutdown_task)
+            except asyncio.CancelledError:
+                cancelled = True
+        self._shutdown_task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _shutdown(self) -> None:
         self._draining = True
         pending = tuple(self._requests)
         if pending:
@@ -96,9 +113,10 @@ class ASGIApplication:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Handle one ASGI scope and preserve cancellation/disconnect cleanup semantics."""
+        from orbit.runtime.context import bind_request_id, reset_request_id
+
         kind = scope["type"]
         if kind == "lifespan":
-            self._router.freeze()
             await handle_lifespan(self._application, receive, send, shutdown=self.shutdown)
             return
         if kind == "websocket":
@@ -107,20 +125,17 @@ class ASGIApplication:
         if kind != "http":
             raise RuntimeError(f"Unsupported ASGI scope: {kind}")
         config = self._application.config.application
-        if self._draining or len(self._requests) >= config.max_concurrent_requests:
-            await self._send(
-                Response.json({"code": "runtime.unavailable"}, status=503),
-                scope.get("method", "GET"),
-                send,
-            )
-            return
+        rejected = self._draining or len(self._requests) >= config.max_concurrent_requests
         task = asyncio.current_task()
         assert task is not None
-        self._requests.add(task)
+        if not rejected:
+            self._requests.add(task)
         request_id = str(uuid4())
         begin = monotonic()
         status = 499
         started = False
+        outcome: Literal["completed", "failed", "cancelled", "disconnected"] = "completed"
+        request_token = bind_request_id(request_id)
 
         async def tracked_send(message: dict[str, Any]) -> None:
             nonlocal started, status
@@ -133,6 +148,11 @@ class ASGIApplication:
                         (b"x-content-type-options", b"nosniff"),
                     ]
                 )
+                if scope.get("path", "").startswith(scope.get("root_path", "") + "/admin"):
+                    message["headers"] = [
+                        (key, value) for key, value in message["headers"] if key != b"cache-control"
+                    ]
+                    message["headers"].append((b"cache-control", b"no-store"))
             try:
                 await send(message)
             except OSError as exc:
@@ -146,6 +166,13 @@ class ASGIApplication:
             application_token = bind_application(self._application)
             try:
                 async with asyncio.timeout(config.request_timeout):
+                    if rejected:
+                        await self._send(
+                            Response.json({"code": "runtime.unavailable"}, status=503),
+                            scope.get("method", "GET"),
+                            tracked_send,
+                        )
+                        return
                     request = await self._read_request(scope, receive, request_id)
                     async with self._application.container.scope() as container:
                         request = replace(request, container=container)
@@ -157,8 +184,13 @@ class ASGIApplication:
             finally:
                 reset_application(application_token)
         except _Disconnected:
+            outcome = "disconnected"
             return
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
         except Exception as exc:
+            outcome = "failed"
             if started:
                 _LOG.exception("Response interrupted", extra={"request_id": request_id})
                 raise
@@ -174,13 +206,19 @@ class ASGIApplication:
             else:
                 _LOG.exception("Unhandled request failure", extra={"request_id": request_id})
                 status, code, message = 500, "runtime.internal", "Internal server error."
-            await self._send(
-                Response.json(
-                    {"code": code, "message": message, "request_id": request_id}, status=status
-                ),
-                scope.get("method", "GET"),
-                tracked_send,
-            )
+            try:
+                async with asyncio.timeout(config.request_timeout):
+                    await self._send(
+                        Response.json(
+                            {"code": code, "message": message, "request_id": request_id},
+                            status=status,
+                        ),
+                        scope.get("method", "GET"),
+                        tracked_send,
+                    )
+            except _Disconnected:
+                outcome = "disconnected"
+                return
         finally:
             reset_principal(principal_token)
             self._requests.discard(task)
@@ -190,8 +228,10 @@ class ASGIApplication:
                     method=scope["method"],
                     status=status,
                     duration_seconds=monotonic() - begin,
+                    outcome=outcome,
                 )
             )
+            reset_request_id(request_token)
 
     async def _read_request(self, scope: Scope, receive: Receive, request_id: str) -> Request:
         limit = self._application.config.application.max_body_bytes
@@ -208,7 +248,7 @@ class ASGIApplication:
             or (lengths and not lengths[0].isdigit())
         ):
             raise HTTPError(400, "request.content-length", "Invalid Content-Length.")
-        if lengths and int(lengths[0]) > limit:
+        if lengths and (len(lengths[0]) > 20 or int(lengths[0]) > limit):
             raise HTTPError(413, "request.too-large", "Request body is too large.")
         chunks = bytearray()
         while True:

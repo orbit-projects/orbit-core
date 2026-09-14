@@ -14,6 +14,14 @@
 """Diagnostics snapshots built from Core-owned state."""
 
 from orbit.diagnostics.diagnostics import Diagnostics
-from orbit.diagnostics.models import DiagnosticSnapshot
+from orbit.diagnostics.logging import JSONFormatter
+from orbit.diagnostics.models import DiagnosticSnapshot, LatencyBucket, RequestRecord, TelemetrySink
 
-__all__ = ["DiagnosticSnapshot", "Diagnostics"]
+__all__ = [
+    "DiagnosticSnapshot",
+    "Diagnostics",
+    "JSONFormatter",
+    "LatencyBucket",
+    "RequestRecord",
+    "TelemetrySink",
+]

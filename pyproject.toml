@@ -18,6 +18,7 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Typing :: Typed",
 ]
 dependencies = [
@@ -28,6 +29,12 @@ dependencies = [
 
 [project.scripts]
 orbit = "orbit.cli:app"
+
+[project.urls]
+Source = "https://github.com/orbit-projects/orbit_core"
+Issues = "https://github.com/orbit-projects/orbit_core/issues"
+Documentation = "https://github.com/orbit-projects/orbit_core/tree/main/docs"
+Security = "https://github.com/orbit-projects/orbit_core/security/policy"
 
 [project.optional-dependencies]
 server = ["uvicorn>=0.34,<1"]

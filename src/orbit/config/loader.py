@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
@@ -35,10 +36,13 @@ def load_config(
     environment: Mapping[str, str] | None = None,
     prefix: str = "ORBIT_",
     file: Path | None = None,
+    max_file_bytes: int = 1024 * 1024,
 ) -> T:
     """Compose TOML, explicit values, then prefixed environment variables (highest priority).
 
-    Nested fields use double underscores, e.g. ORBIT_DATABASE__HOST. Pydantic owns value
+    Nested fields use double underscores, e.g. ORBIT_DATABASE__HOST. JSON objects and
+    arrays in environment values are decoded; scalar values remain strings for Pydantic.
+    Explicit nested fields override fields from a JSON parent object. Pydantic owns value
     coercion and validation. Unrecognized prefixed fields are rejected by extra='forbid'
     models. Validation errors omit submitted values to avoid exposing secrets.
     """
@@ -56,25 +60,42 @@ def load_config(
 
     data: dict[str, Any] = {}
     try:
+        if not prefix or max_file_bytes <= 0:
+            raise ValueError("A nonempty prefix and positive file size limit are required.")
         if file is not None:
             with file.open("rb") as stream:
-                merge(data, tomllib.load(stream))
+                content = stream.read(max_file_bytes + 1)
+            if len(content) > max_file_bytes:
+                raise ValueError("Configuration file exceeds size limit.")
+            merge(data, tomllib.loads(content.decode("utf-8")))
         merge(data, values or {})
+        seen: set[tuple[str, ...]] = set()
         for name, value in sorted((environment or {}).items()):
             if not name.startswith(prefix):
                 continue
             parts = name[len(prefix) :].lower().split("__")
             if not all(parts):
                 raise ValueError("Empty environment field.")
+            if tuple(parts) in seen:
+                raise ValueError("Ambiguous environment field casing.")
+            seen.add(tuple(parts))
+            decoded = json.loads(value) if value.lstrip().startswith(("[", "{")) else value
             cursor = data
             for part in parts[:-1]:
                 existing = cursor.setdefault(part, {})
                 if not isinstance(existing, dict):
                     raise ValueError("Conflicting environment fields.")
                 cursor = existing
-            cursor[parts[-1]] = value
+            if isinstance(decoded, Mapping):
+                existing = cursor.get(parts[-1])
+                if not isinstance(existing, dict):
+                    existing = {}
+                    cursor[parts[-1]] = existing
+                merge(existing, decoded)
+            else:
+                cursor[parts[-1]] = decoded
         return model.model_validate(data)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         fields = (
             [".".join(map(str, error["loc"])) for error in exc.errors(include_input=False)]
             if isinstance(exc, ValidationError)

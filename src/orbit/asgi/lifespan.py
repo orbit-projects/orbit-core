@@ -45,21 +45,23 @@ async def handle_lifespan(
             {"type": "lifespan.startup.failed", "message": "Orbit startup failed; see logs."}
         )
         return
-    await send({"type": "lifespan.startup.complete"})
     try:
+        await send({"type": "lifespan.startup.complete"})
         message = await receive()
         if message["type"] != "lifespan.shutdown":
             raise RuntimeError("Expected lifespan.shutdown.")
-    finally:
-        try:
-            await (shutdown() if shutdown else application.stop())
-        except Exception:
-            _LOG.exception("Application shutdown failed")
-            await send(
-                {"type": "lifespan.shutdown.failed", "message": "Orbit shutdown failed; see logs."}
-            )
-        else:
-            await send({"type": "lifespan.shutdown.complete"})
+    except BaseException:
+        await (shutdown() if shutdown else application.stop())
+        raise
+    try:
+        await (shutdown() if shutdown else application.stop())
+    except Exception:
+        _LOG.exception("Application shutdown failed")
+        await send(
+            {"type": "lifespan.shutdown.failed", "message": "Orbit shutdown failed; see logs."}
+        )
+    else:
+        await send({"type": "lifespan.shutdown.complete"})
 
 
 __all__ = ["handle_lifespan"]
