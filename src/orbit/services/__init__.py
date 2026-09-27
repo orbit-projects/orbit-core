@@ -13,8 +13,9 @@
 # limitations under the License.
 """Service base classes, contracts, metadata, and registry."""
 
+from orbit.services.contracts import ServiceContract
 from orbit.services.models import ServiceDescriptor
 from orbit.services.registry import ServiceRegistry
 from orbit.services.service import Service
 
-__all__ = ["Service", "ServiceDescriptor", "ServiceRegistry"]
+__all__ = ["Service", "ServiceContract", "ServiceDescriptor", "ServiceRegistry"]

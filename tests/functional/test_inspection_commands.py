@@ -46,6 +46,8 @@ def test_inspection_commands_are_read_only(monkeypatch, command):
         assert value[0]["name"] == "worker"
     if command == "config":
         assert value["application"]["name"] == "cli-inspection"
+    if command == "dependencies":
+        assert value[0]["id"]
 
 
 def test_installed_command_imports_application_from_working_directory(tmp_path):

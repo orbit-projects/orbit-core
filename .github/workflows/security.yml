@@ -2,6 +2,7 @@ name: OpenSSF Scorecard
 on:
   push:
     branches: [main]
+  pull_request:
   schedule:
     - cron: '30 1 * * 6'
 permissions: read-all
@@ -9,6 +10,7 @@ jobs:
   analysis:
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       security-events: write
       id-token: write
     steps:
@@ -23,3 +25,9 @@ jobs:
       - uses: github/codeql-action/upload-sarif@ea14db8afdef5d462e69d78c4ca45002d4522418 # v4.37.4
         with:
           sarif_file: results.sarif
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: scorecard-results
+          path: results.sarif
+          if-no-files-found: error
+          retention-days: 5

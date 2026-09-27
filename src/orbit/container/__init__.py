@@ -13,7 +13,18 @@
 # limitations under the License.
 """Explicit dependency injection and resolution APIs."""
 
-from orbit.container.container import Container
+from orbit.container.container import Container, ProviderObserver, ProviderResolution
+from orbit.container.contracts import ContainerContract
+from orbit.container.dependency import DependencyKey
+from orbit.container.provider import Provider
 from orbit.container.scope import Scope
 
-__all__ = ["Container", "Scope"]
+__all__ = [
+    "Container",
+    "ContainerContract",
+    "DependencyKey",
+    "Provider",
+    "ProviderObserver",
+    "ProviderResolution",
+    "Scope",
+]

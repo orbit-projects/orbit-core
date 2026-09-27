@@ -3,6 +3,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: orbit-core-release-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   build:
     if: github.ref == 'refs/heads/main'
@@ -21,14 +24,29 @@ jobs:
           python-version: '3.11'
       - run: python -m pip install uv==0.12.13
       - run: uv sync --frozen --extra dev --extra server
+      - run: uv lock --check
       - run: uv run --no-sync ruff check src tests scripts examples
       - run: uv run --no-sync ruff format --check src tests scripts examples
       - run: uv run --no-sync mypy src/orbit
+      - run: uv run --no-sync python scripts/check-model-boundaries.py
       - run: uv run --no-sync pytest --cov=orbit
+      - name: Validate managed Gunicorn/Uvicorn workers
+        run: ORBIT_RUN_HOSTING_TESTS=1 uv run --no-sync pytest -q tests/integration/test_gunicorn_host.py
+      - run: uv run --no-sync python scripts/check-documentation.py
       - run: uv run --no-sync python scripts/check-license-headers.py
       - run: uv run --no-sync pip-audit --skip-editable --progress-spinner off
       - run: uv run --no-sync python -m build --no-isolation
+      - run: uv run --no-sync python scripts/check-package.py dist
       - run: uv run --no-sync pip-audit --skip-editable --format cyclonedx-json --output dist/dependencies.cdx.json
+      - name: Validate dependency SBOM syntax
+        run: python -m json.tool dist/dependencies.cdx.json > /dev/null
+      - name: Generate release checksums
+        run: |
+          find dist -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+            | sort -z \
+            | xargs -0 --no-run-if-empty sha256sum > dist/SHA256SUMS
+      - name: Verify release checksums
+        run: sha256sum --check dist/SHA256SUMS
       - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
           subject-path: dist/*
@@ -36,3 +54,4 @@ jobs:
         with:
           name: orbit-core-distributions
           path: dist/
+          if-no-files-found: error

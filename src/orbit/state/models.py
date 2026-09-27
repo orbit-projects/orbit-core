@@ -13,7 +13,7 @@
 # limitations under the License.
 """Versioned snapshots of application and component lifecycle state."""
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
 from orbit.health import HealthStatus
 from orbit.lifecycle import LifecyclePhase
@@ -23,8 +23,8 @@ from orbit.types import ApplicationId
 class ComponentState(BaseModel):
     """State for a named service or plugin, including partial-startup failures."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    name: str
+    model_config = ConfigDict(frozen=True, extra="forbid", validate_default=True)
+    name: StrictStr = Field(pattern=r"^[a-z][a-z0-9-]{0,62}$")
     phase: LifecyclePhase = LifecyclePhase.CREATED
     health: HealthStatus = HealthStatus.UNKNOWN
 
@@ -32,12 +32,12 @@ class ComponentState(BaseModel):
 class ApplicationState(BaseModel):
     """A detached, runtime-validated snapshot shared by all operator surfaces."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", validate_default=True)
     application_id: ApplicationId
     phase: LifecyclePhase = LifecyclePhase.CREATED
-    service_count: int = Field(default=0, ge=0)
+    service_count: StrictInt = Field(default=0, ge=0)
     health: HealthStatus = HealthStatus.UNKNOWN
-    revision: int = Field(default=0, ge=0)
+    revision: StrictInt = Field(default=0, ge=0)
     services: tuple[ComponentState, ...] = ()
     plugins: tuple[ComponentState, ...] = ()
 

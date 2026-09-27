@@ -17,17 +17,23 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from orbit._limits import is_aware_datetime
 from orbit.lifecycle.phase import LifecyclePhase
 
 
 class LifecycleTransition(BaseModel):
     """A completed state transition captured for observers and diagnostics."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", validate_default=True)
 
     previous: LifecyclePhase
     current: LifecyclePhase
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    def model_post_init(self, __context: object) -> None:
+        """Reject ambiguous transition timestamps before observers or history retain them."""
+        if not is_aware_datetime(self.occurred_at):
+            raise ValueError("Lifecycle transition timestamps must include timezone information.")
 
 
 __all__ = ["LifecycleTransition"]

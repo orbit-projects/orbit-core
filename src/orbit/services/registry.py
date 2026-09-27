@@ -17,6 +17,9 @@ from __future__ import annotations
 
 from graphlib import CycleError, TopologicalSorter
 
+from pydantic import ValidationError as PydanticValidationError
+
+from orbit._limits import _MAX_CORE_CAPACITY
 from orbit.errors import ErrorCategory, OrbitProblem, ValidationError
 from orbit.services.contracts import ServiceContract
 from orbit.services.models import ServiceDescriptor
@@ -37,19 +40,30 @@ class ServiceRegistry:
         self._descriptors: dict[ServiceId, ServiceDescriptor] = {}
         self._frozen = False
 
-    def register(self, service: ServiceContract) -> None:
-        """Register a unique service identity/name before composition freezes."""
+    def register(self, service: ServiceContract) -> ServiceDescriptor:
+        """Register a unique service and return its detached composition descriptor."""
         if self._frozen:
             raise _error("frozen", "Services are frozen.")
+        if len(self._services) >= _MAX_CORE_CAPACITY:
+            raise _error("capacity", "Service registry capacity reached.")
         if not isinstance(service, ServiceContract):
             raise _error("invalid-contract", "Service does not satisfy ServiceContract.")
-        descriptor = ServiceDescriptor.model_validate(service.descriptor)
+        for hook_name in ("configure", "initialize", "start", "stop", "health"):
+            if not callable(getattr(service, hook_name, None)):
+                raise _error("invalid-contract", f"Service hook {hook_name} must be callable.")
+        try:
+            descriptor = ServiceDescriptor.model_validate(service.descriptor)
+        except PydanticValidationError as exc:
+            raise _error(
+                "invalid-descriptor", "Service descriptor failed Core validation."
+            ) from exc
         if descriptor.id in self._services or any(
             d.name == descriptor.name for d in self._descriptors.values()
         ):
             raise _error("duplicate-service", f"Duplicate service: {descriptor.name}.")
         self._services[descriptor.id] = service
         self._descriptors[descriptor.id] = descriptor.model_copy(deep=True)
+        return self._descriptors[descriptor.id]
 
     @property
     def services(self) -> tuple[ServiceContract, ...]:
@@ -68,6 +82,8 @@ class ServiceRegistry:
 
     def ordered(self) -> tuple[ServiceContract, ...]:
         """Validate the full dependency graph and return dependency-first services."""
+        for service_id, service in self._services.items():
+            self._stable_descriptor(service_id, service)
         for descriptor in self._descriptors.values():
             missing = set(descriptor.dependencies) - self._services.keys()
             if missing:
@@ -82,6 +98,55 @@ class ServiceRegistry:
     def get(self, service_id: ServiceId) -> ServiceContract:
         """Resolve a registered service by identity; raise KeyError if absent."""
         return self._services[service_id]
+
+    def get_by_name(self, name: str) -> ServiceContract:
+        """Resolve a registered service by its stable descriptor name."""
+        for service_id, descriptor in self._descriptors.items():
+            if descriptor.name == name:
+                return self._services[service_id]
+        raise KeyError(name)
+
+    def descriptor_for(self, service: ServiceContract) -> ServiceDescriptor:
+        """Return the registered descriptor after verifying service identity is unchanged.
+
+        Service implementations remain user-owned objects and may expose a mutable descriptor
+        attribute. Core never follows a descriptor that changed after registration: accepting it
+        would make lifecycle state and dependency ordering disagree with the frozen composition
+        graph. A mutation therefore fails closed with a structured validation error.
+        """
+        for service_id, candidate in self._services.items():
+            if candidate is service:
+                return self._stable_descriptor(service_id, candidate)
+        raise KeyError("Service is not registered.")
+
+    def snapshot_for(self, service: ServiceContract) -> ServiceDescriptor:
+        """Return a frozen descriptor without consulting live service metadata.
+
+        Cleanup uses this method after a lifecycle hook has failed. It deliberately does not
+        validate the mutable service object again: rollback must retain the registered identity
+        even when the service violated the descriptor stability contract while failing startup.
+        """
+        for service_id, candidate in self._services.items():
+            if candidate is service:
+                return self._descriptors[service_id]
+        raise KeyError("Service is not registered.")
+
+    def _stable_descriptor(
+        self, service_id: ServiceId, service: ServiceContract
+    ) -> ServiceDescriptor:
+        """Validate one service's live descriptor against its registration snapshot."""
+        expected = self._descriptors[service_id]
+        try:
+            current = ServiceDescriptor.model_validate(service.descriptor)
+        except Exception as exc:
+            raise _error(
+                "descriptor-mutated", "A registered service descriptor is no longer valid."
+            ) from exc
+        if current != expected:
+            raise _error(
+                "descriptor-mutated", "A registered service descriptor changed after registration."
+            )
+        return expected
 
 
 __all__ = ["ServiceRegistry"]

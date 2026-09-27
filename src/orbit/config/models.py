@@ -13,24 +13,79 @@
 # limitations under the License.
 """Validated operational limits shared by application, ASGI, health and admin."""
 
-from pydantic import BaseModel, ConfigDict, Field
+from ipaddress import ip_network
 
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    field_validator,
+)
+
+from orbit._limits import _MAX_CORE_CAPACITY
 from orbit.types import ApplicationId, new_application_id
 
 
 class ApplicationConfig(BaseModel):
     """Immutable process configuration with bounded resource and timeout defaults."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        allow_inf_nan=False,
+        validate_default=True,
+    )
     id: ApplicationId = Field(default_factory=new_application_id)
-    name: str = Field(pattern=r"^[a-z][a-z0-9-]{0,62}$")
-    environment: str = Field(default="development", pattern=r"^[a-z][a-z0-9-]{0,62}$")
-    lifecycle_timeout: float = Field(default=30, gt=0, le=600)
-    health_timeout: float = Field(default=2, gt=0, le=60)
-    request_timeout: float = Field(default=30, gt=0, le=600)
-    max_body_bytes: int = Field(default=1024 * 1024, ge=0, le=1024 * 1024 * 1024)
-    max_concurrent_requests: int = Field(default=1000, ge=1)
-    admin_enabled: bool = False
+    name: StrictStr = Field(pattern=r"^[a-z][a-z0-9-]{0,62}$")
+    environment: StrictStr = Field(default="development", pattern=r"^[a-z][a-z0-9-]{0,62}$")
+    lifecycle_timeout: StrictFloat = Field(default=30.0, gt=0, le=600)
+    health_timeout: StrictFloat = Field(default=2.0, gt=0, le=60)
+    request_timeout: StrictFloat = Field(default=30.0, gt=0, le=600)
+    max_body_bytes: StrictInt = Field(default=1024 * 1024, ge=0, le=1024 * 1024 * 1024)
+    max_response_bytes: StrictInt = Field(
+        default=16 * 1024 * 1024, ge=1024, le=4 * 1024 * 1024 * 1024
+    )
+    max_header_bytes: StrictInt = Field(default=64 * 1024, ge=1024, le=16 * 1024 * 1024)
+    max_concurrent_requests: StrictInt = Field(default=1000, ge=1, le=_MAX_CORE_CAPACITY)
+    admin_enabled: StrictBool = False
+    admin_rate_limit: StrictInt = Field(default=120, ge=1, le=100_000)
+    admin_rate_period: StrictFloat = Field(default=60.0, gt=0, le=86_400)
+    trust_forwarded_headers: StrictBool = False
+    trusted_proxies: tuple[StrictStr, ...] = ()
+
+    @field_validator(
+        "lifecycle_timeout",
+        "health_timeout",
+        "request_timeout",
+        "max_body_bytes",
+        "max_response_bytes",
+        "max_header_bytes",
+        "max_concurrent_requests",
+        "admin_rate_limit",
+        "admin_rate_period",
+        mode="before",
+    )
+    @classmethod
+    def reject_boolean_limits(cls, value: object) -> object:
+        """Reject Python's implicit bool-as-number coercion in resource policies."""
+        if isinstance(value, bool):
+            raise ValueError("application numeric limits must not be booleans.")
+        return value
+
+    @field_validator("trusted_proxies")
+    @classmethod
+    def validate_trusted_proxies(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        """Validate CIDR entries and remove duplicate networks while preserving order."""
+        try:
+            for value in values:
+                ip_network(value, strict=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("trusted_proxies must contain valid IP networks.") from exc
+        return tuple(dict.fromkeys(values))
 
 
 __all__ = ["ApplicationConfig"]

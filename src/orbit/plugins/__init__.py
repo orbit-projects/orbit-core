@@ -13,9 +13,17 @@
 # limitations under the License.
 """Plugin contracts, metadata, discovery, and registry."""
 
+from orbit.plugins.contracts import PluginContract
 from orbit.plugins.loader import discover_plugins
-from orbit.plugins.metadata import PluginMetadata
+from orbit.plugins.metadata import CORE_API_VERSION, PluginMetadata
 from orbit.plugins.plugin import Plugin
 from orbit.plugins.registry import PluginRegistry
 
-__all__ = ["Plugin", "PluginMetadata", "PluginRegistry", "discover_plugins"]
+__all__ = [
+    "CORE_API_VERSION",
+    "Plugin",
+    "PluginContract",
+    "PluginMetadata",
+    "PluginRegistry",
+    "discover_plugins",
+]

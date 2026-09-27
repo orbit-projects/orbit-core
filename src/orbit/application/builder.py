@@ -13,6 +13,7 @@
 # limitations under the License.
 """Deliberate composition helper for creating Orbit applications."""
 
+from orbit._limits import _MAX_CORE_CAPACITY
 from orbit.application.application import Application
 from orbit.config import ApplicationConfig
 from orbit.services.contracts import ServiceContract
@@ -28,6 +29,8 @@ class ApplicationBuilder:
 
     def service(self, service: ServiceContract) -> "ApplicationBuilder":
         """Add a service and return the builder for fluent composition."""
+        if len(self._services) >= _MAX_CORE_CAPACITY:
+            raise RuntimeError("Application builder service capacity reached.")
         self._services.append(service)
         return self
 

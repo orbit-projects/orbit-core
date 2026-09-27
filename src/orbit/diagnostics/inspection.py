@@ -20,14 +20,16 @@ Configuration uses Core's redacted JSON representation.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator
 
+from orbit._immutability import freeze_mapping, validate_mapping
 from orbit.container.scope import Scope
 from orbit.plugins.metadata import PluginMetadata
 from orbit.routing.models import RouteMetadata
 from orbit.services.models import ServiceDescriptor
+from orbit.types import ConfigurationId, ProviderId
 
 if TYPE_CHECKING:
     from orbit.application import Application
@@ -36,32 +38,64 @@ if TYPE_CHECKING:
 class ProviderDescription(BaseModel):
     """Provider registration metadata without factory objects or resolved values."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    key: str
+    model_config = ConfigDict(frozen=True, extra="forbid", validate_default=True)
+    id: ProviderId
+    key: StrictStr = Field(min_length=1, max_length=255)
     scope: Scope
-    dependencies: tuple[str, ...]
-    resource: bool
+    dependencies: tuple[StrictStr, ...]
+    resource: StrictBool
+
+    @field_validator("key", "dependencies")
+    @classmethod
+    def validate_text(cls, value: str | tuple[str, ...]) -> str | tuple[str, ...]:
+        """Reject control-bearing provider text before it reaches operator output."""
+        values = (value,) if isinstance(value, str) else value
+        if any(
+            not 1 <= len(item) <= 255
+            or any(ord(character) < 32 or ord(character) == 127 for character in item)
+            for item in values
+        ):
+            raise ValueError("Provider inspection text must be bounded printable strings.")
+        return value
 
 
 class CompositionSnapshot(BaseModel):
-    """Detached metadata describing the currently composed application."""
+    """Validated, detached metadata describing the currently composed application."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", validate_default=True)
     services: tuple[ServiceDescriptor, ...]
     plugins: tuple[PluginMetadata, ...]
+    enabled_plugins: tuple[StrictStr, ...] = ()
     routes: tuple[RouteMetadata, ...]
     dependencies: tuple[ProviderDescription, ...]
-    configuration: dict[str, object]
+    configuration_id: ConfigurationId
+    configuration: dict[str, Any]
+
+    @field_validator("configuration", mode="before")
+    @classmethod
+    def validate_configuration(cls, value: object) -> dict[str, Any]:
+        """Bound configuration keys before an inspection snapshot is retained."""
+        return validate_mapping(value, name="Composition configuration")
+
+    def model_post_init(self, __context: object) -> None:
+        """Freeze nested configuration so a published operator snapshot cannot be rewritten."""
+        object.__setattr__(self, "configuration", freeze_mapping(self.configuration))
 
 
 def inspect_composition(application: Application) -> CompositionSnapshot:
     """Capture component definitions without triggering lifecycle or provider hooks."""
     return CompositionSnapshot(
         services=application.services.descriptors,
-        plugins=tuple(plugin.metadata for plugin in application.plugins.plugins),
+        # Composition is an operator-facing snapshot; never expose a live plugin identity that
+        # can change after registration and diverge from enablement or lifecycle state.
+        plugins=tuple(
+            application.plugins.snapshot_for(plugin) for plugin in application.plugins.plugins
+        ),
+        enabled_plugins=application.plugins.enabled_names,
         routes=tuple(route.metadata for route in application.router.routes),
         dependencies=tuple(
             ProviderDescription(
+                id=provider.id,
                 key=str(key),
                 scope=provider.scope,
                 dependencies=tuple(str(dependency) for dependency in provider.dependencies),
@@ -69,6 +103,7 @@ def inspect_composition(application: Application) -> CompositionSnapshot:
             )
             for key, provider in application.container.providers.items()
         ),
+        configuration_id=application.config.configuration_id,
         configuration=application.config.inspect(),
     )
 

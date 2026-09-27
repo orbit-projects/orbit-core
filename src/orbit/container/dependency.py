@@ -17,4 +17,19 @@ from typing import Any, TypeAlias
 
 DependencyKey: TypeAlias = type[Any] | str
 
+
+def _validate_dependency_key(key: DependencyKey) -> None:
+    """Reject malformed names before they reach provider state or diagnostics."""
+    if isinstance(key, str):
+        if not key or len(key) > 255:
+            raise ValueError(
+                "Dependency string keys must be nonempty and bounded to 255 characters."
+            )
+        if any(ord(character) < 32 or ord(character) == 127 for character in key):
+            raise ValueError("Dependency string keys must not contain control characters.")
+        return
+    if not isinstance(key, type):
+        raise TypeError("Dependency keys must be types or nonempty strings.")
+
+
 __all__ = ["DependencyKey"]

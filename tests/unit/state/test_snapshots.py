@@ -34,4 +34,39 @@ def test_state_changes_are_validated_and_versioned():
         store.update(application_id=new_application_id())
     with pytest.raises(ValueError):
         store.replace(ApplicationState(application_id=new_application_id()))
+    replaced = store.replace(store.current.model_copy(update={"service_count": 4}))
+    assert replaced.service_count == 4
+    assert store.current.service_count == 4
+
+    stale = initial.model_copy(update={"service_count": 5})
+    with pytest.raises(ValueError, match="Stale"):
+        store.replace(stale)
+    assert store.current.service_count == 4
+
+
+def test_state_transaction_commits_atomically_and_detects_conflicts():
+    store = StateStore(ApplicationState(application_id=new_application_id()))
+    with store.transaction() as transaction:
+        transaction.update(service_count=2, health="healthy")
+    assert store.current.revision == 1
     assert store.current.service_count == 2
+
+    pending = store.transaction()
+    first = pending.__enter__()
+    store.update(service_count=3)
+    first.update(service_count=4)
+    with pytest.raises(ValueError, match="Stale"):
+        pending.__exit__(None, None, None)
+
+
+def test_state_transaction_rejects_owned_fields_and_closed_mutations():
+    store = StateStore(ApplicationState(application_id=new_application_id()))
+    manager = store.transaction()
+    transaction = manager.__enter__()
+    with pytest.raises(ValueError):
+        transaction.update(revision=4)
+    transaction.rollback()
+    with pytest.raises(RuntimeError, match="closed"):
+        transaction.update(health="healthy")
+    with pytest.raises(RuntimeError, match="closed"):
+        transaction.commit()

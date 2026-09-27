@@ -15,6 +15,6 @@
 
 from orbit.routing.models import RouteMetadata
 from orbit.routing.route import Route
-from orbit.routing.router import Router
+from orbit.routing.router import RouteGroup, Router
 
-__all__ = ["Route", "RouteMetadata", "Router"]
+__all__ = ["Route", "RouteGroup", "RouteMetadata", "Router"]

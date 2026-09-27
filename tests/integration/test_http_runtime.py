@@ -14,15 +14,17 @@
 """ASGI framing, middleware, authentication, readiness and resource integration."""
 
 import asyncio
+import gzip
 from contextlib import asynccontextmanager
 
 import pytest
 from pydantic import BaseModel, SecretStr
 
 from orbit import Application, ApplicationConfig, Service, ServiceDescriptor
-from orbit.asgi import ASGIApplication, Response
-from orbit.asgi.request import Headers, Request
+from orbit.asgi import ASGIApplication, GZipMiddleware, Response
+from orbit.asgi.request import Headers, HTTPError, Request
 from orbit.container import Scope
+from orbit.diagnostics import InMemoryTracer
 from orbit.health import HealthReport, HealthStatus
 from orbit.security import Identity, Principal
 from orbit.security.context import current_principal
@@ -32,6 +34,344 @@ from orbit.testing import TestClient
 def compose(**config):
     app = Application(ApplicationConfig(name="http-tests", **config))
     return app, ASGIApplication(app)
+
+
+def test_raw_path_validation_rejects_encoded_traversal_bytes() -> None:
+    with pytest.raises(HTTPError, match="canonical"):
+        ASGIApplication._validate_raw_path(b"/users/%2e%2e/private")
+    for raw_path in (
+        b"relative",
+        b"/users/%2",
+        b"/users/%zz",
+        b"/users/%2fprivate",
+        b"/users/%5cprivate",
+        b"/users/%3fprivate",
+        b"/users/%23private",
+        b"/users/%01private",
+        b"/users//private",
+    ):
+        with pytest.raises(HTTPError, match="canonical"):
+            ASGIApplication._validate_raw_path(raw_path)
+
+
+@pytest.mark.parametrize("raw_path", [b"/file%2Etxt", b"/v1/%C3%A9", b"/items/42"])
+def test_raw_path_validation_preserves_safe_encoded_segments(raw_path: bytes) -> None:
+    """Encoded ordinary characters remain valid while routing boundaries stay protected."""
+    ASGIApplication._validate_raw_path(raw_path)
+
+
+@pytest.mark.parametrize("raw_path", [b"/invalid/\xff", b"/invalid/%FF"])
+def test_raw_path_validation_rejects_invalid_utf8(raw_path: bytes) -> None:
+    with pytest.raises(HTTPError, match="canonical"):
+        ASGIApplication._validate_raw_path(raw_path)
+
+
+async def test_raw_path_must_match_decoded_scope_path() -> None:
+    app, asgi = compose()
+    async with app.running():
+        messages = []
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            messages.append(message)
+
+        await asgi(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/expected",
+                "raw_path": b"/different",
+                "headers": [],
+            },
+            receive,
+            send,
+        )
+    assert messages[0]["status"] == 400
+
+
+async def test_forwarded_headers_require_a_trusted_proxy():
+    app, asgi = compose(
+        trust_forwarded_headers=True,
+        trusted_proxies=("127.0.0.1/32",),
+    )
+
+    @app.router.route("/request", name="request")
+    async def request_info(request):
+        return Response.json({"host": request.client_host, "scheme": request.scheme})
+
+    async with TestClient(asgi) as client:
+        response = await client.request(
+            "GET",
+            "/request",
+            headers={"x-forwarded-for": "203.0.113.4", "x-forwarded-proto": "https"},
+        )
+    assert response.json() == {"host": "203.0.113.4", "scheme": "https"}
+
+
+async def test_malformed_forwarded_client_port_is_not_trusted():
+    app, asgi = compose(
+        trust_forwarded_headers=True,
+        trusted_proxies=("127.0.0.1/32",),
+    )
+
+    @app.router.route("/request", name="request")
+    async def request_info(request):
+        return Response.json({"host": request.client_host})
+
+    async with TestClient(asgi) as client:
+        response = await client.request(
+            "GET", "/request", headers={"forwarded": "for=203.0.113.4:bad"}
+        )
+    assert response.json() == {"host": "127.0.0.1"}
+
+
+@pytest.mark.parametrize("forwarded", ["for=fe80::1%eth0", "for=[fe80::1%25eth0]"])
+async def test_scoped_forwarded_ipv6_is_not_trusted(forwarded: str) -> None:
+    """Interface-scoped IPv6 literals cannot become trusted client identities."""
+    app, asgi = compose(
+        trust_forwarded_headers=True,
+        trusted_proxies=("127.0.0.1/32",),
+    )
+
+    @app.router.route("/request", name="request")
+    async def request_info(request):
+        return Response.json({"host": request.client_host})
+
+    async with TestClient(asgi) as client:
+        response = await client.request("GET", "/request", headers={"forwarded": forwarded})
+    assert response.json() == {"host": "127.0.0.1"}
+
+
+def test_scoped_ipv6_addresses_are_never_trusted() -> None:
+    """The trust helper rejects Python's interface-scoped IPv6 extension explicitly."""
+    assert not ASGIApplication._trusted("fe80::1%eth0", ("fe80::/64",))
+
+
+@pytest.mark.parametrize(
+    "forwarded",
+    [
+        "for=203.0.113.4;for=198.51.100.4;proto=https",
+        "for=203.0.113.4;proto=https;proto=http",
+    ],
+)
+async def test_duplicate_forwarded_parameters_fail_closed(forwarded: str) -> None:
+    """Repeated identity or scheme parameters cannot overwrite trusted proxy metadata."""
+    app, asgi = compose(
+        trust_forwarded_headers=True,
+        trusted_proxies=("127.0.0.1/32",),
+    )
+
+    @app.router.route("/request", name="request")
+    async def request_info(request):
+        return Response.json({"host": request.client_host, "scheme": request.scheme})
+
+    async with TestClient(asgi) as client:
+        response = await client.request(
+            "GET",
+            "/request",
+            headers={"forwarded": forwarded},
+        )
+    assert response.json() == {"host": "127.0.0.1", "scheme": "http"}
+
+
+@pytest.mark.parametrize(
+    "header_name",
+    ["forwarded", "x-forwarded-for", "x-forwarded-proto"],
+)
+async def test_duplicate_forwarding_headers_fail_closed(header_name: str) -> None:
+    """Conflicting proxy fields must not override the direct socket identity or scheme."""
+    app, asgi = compose(
+        trust_forwarded_headers=True,
+        trusted_proxies=("127.0.0.1/32",),
+    )
+
+    @app.router.route("/request", name="request")
+    async def request_info(request):
+        return Response.json({"host": request.client_host, "scheme": request.scheme})
+
+    async with TestClient(asgi) as client:
+        response = await client.request(
+            "GET",
+            "/request",
+            headers=[
+                (
+                    header_name,
+                    "for=203.0.113.4;proto=https" if header_name == "forwarded" else "203.0.113.4",
+                ),
+                (
+                    header_name,
+                    "for=198.51.100.4;proto=http" if header_name == "forwarded" else "198.51.100.4",
+                ),
+            ],
+        )
+    assert response.json() == {"host": "127.0.0.1", "scheme": "http"}
+
+
+async def test_runtime_tracer_records_http_span():
+    app = Application(ApplicationConfig(name="trace-tests"))
+    tracer = InMemoryTracer()
+    asgi = ASGIApplication(app, tracer=tracer)
+
+    @app.router.route("/trace", name="trace")
+    async def trace(request):
+        return Response.text("ok")
+
+    async with TestClient(asgi) as client:
+        response = await client.request("GET", "/trace")
+    assert response.status == 200
+    span = next(item for item in tracer.history if item.name == "http.get")
+    assert span.attributes["http.route"] == "/trace"
+    assert span.attributes["http.status_code"] == 200
+    assert span.status == "ok"
+
+
+async def test_runtime_enforces_outbound_header_budget_after_runtime_headers() -> None:
+    app, asgi = compose()
+
+    @app.router.route("/headers", name="headers")
+    async def headers(request):
+        return Response(status=200, headers=[("x-test", "ok")] * 999)
+
+    async with TestClient(asgi) as client:
+        response = await client.request("GET", "/headers")
+    assert response.status == 500
+    assert response.json()["code"] == "runtime.internal"
+
+
+async def test_runtime_owned_response_headers_cannot_be_overridden() -> None:
+    app, asgi = compose()
+
+    @app.router.route("/headers", name="headers")
+    async def headers(request):
+        return Response(
+            body=b"ok",
+            headers={
+                "x-request-id": "attacker-controlled",
+                "x-content-type-options": "unsafe",
+            },
+        )
+
+    async with TestClient(asgi) as client:
+        response = await client.request("GET", "/headers")
+    assert len(response.headers.getall("x-request-id")) == 1
+    assert len(response.headers.getall("x-content-type-options")) == 1
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-request-id"] != "attacker-controlled"
+
+
+async def test_gzip_middleware_negotiates_and_skips_streams():
+    app, asgi = compose()
+    asgi.add_middleware(GZipMiddleware(minimum_size=1))
+
+    @app.router.route("/text", name="text")
+    async def text(request):
+        return Response.text("compress me")
+
+    async with TestClient(asgi) as client:
+        compressed = await client.request("GET", "/text", headers={"accept-encoding": "gzip"})
+        plain = await client.request("GET", "/text")
+    assert compressed.headers["content-encoding"] == "gzip"
+    assert gzip.decompress(compressed.body) == b"compress me"
+    assert "content-encoding" not in plain.headers
+
+
+def test_gzip_rejects_non_integer_limits() -> None:
+    middleware = GZipMiddleware()
+    with pytest.raises(AttributeError):
+        middleware.minimum_size = 1  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        middleware.compresslevel = 1  # type: ignore[misc]
+    with pytest.raises(ValueError, match="Compression limits"):
+        GZipMiddleware(minimum_size=float("nan"))
+    with pytest.raises(ValueError, match="Compression limits"):
+        GZipMiddleware(compresslevel=True)
+
+
+async def test_gzip_quality_explicit_override_is_order_independent():
+    app, asgi = compose()
+    asgi.add_middleware(GZipMiddleware(minimum_size=1))
+
+    @app.router.route("/text", name="text")
+    async def text(request):
+        return Response.text("compress me")
+
+    async with TestClient(asgi) as client:
+        disabled = await client.request(
+            "GET", "/text", headers={"accept-encoding": "gzip;q=0, *;q=1"}
+        )
+        enabled = await client.request(
+            "GET", "/text", headers={"accept-encoding": "*;q=1, gzip;q=1"}
+        )
+    assert "content-encoding" not in disabled.headers
+    assert enabled.headers["content-encoding"] == "gzip"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "header",
+    [
+        "gzip;Q=0",
+        "gzip;q=1.0000",
+        "gzip;q=0.5e0",
+        "gzip;q=-0.1",
+        "gzip;q=2",
+        "gzip;q=0.",
+    ],
+)
+async def test_gzip_rejects_non_rfc_quality_values(header: str) -> None:
+    """Compression negotiation fails closed for malformed or case-variant qvalues."""
+    app, asgi = compose()
+    asgi.add_middleware(GZipMiddleware(minimum_size=1))
+
+    @app.router.route("/text", name="text")
+    async def text(request):
+        return Response.text("compress me")
+
+    async with TestClient(asgi) as client:
+        response = await client.request("GET", "/text", headers={"accept-encoding": header})
+    assert "content-encoding" not in response.headers
+
+
+async def test_gzip_combines_repeated_accept_encoding_fields_and_rejects_duplicates():
+    app, asgi = compose()
+    asgi.add_middleware(GZipMiddleware(minimum_size=1))
+
+    @app.router.route("/text", name="text")
+    async def text(request):
+        return Response.text("compress me")
+
+    async with TestClient(asgi) as client:
+        combined = await client.request(
+            "GET",
+            "/text",
+            headers=[("accept-encoding", "identity"), ("accept-encoding", "gzip")],
+        )
+        duplicate = await client.request(
+            "GET",
+            "/text",
+            headers=[("accept-encoding", "gzip"), ("accept-encoding", "gzip")],
+        )
+    assert combined.headers["content-encoding"] == "gzip"
+    assert "content-encoding" not in duplicate.headers
+
+
+async def test_gzip_preserves_existing_vary_dimensions():
+    app, asgi = compose()
+    asgi.add_middleware(GZipMiddleware(minimum_size=1))
+
+    @app.router.route("/text", name="text")
+    async def text(request):
+        return Response(
+            body=b"compress me",
+            headers={"content-type": "text/plain", "vary": "Origin"},
+        )
+
+    async with TestClient(asgi) as client:
+        response = await client.request("GET", "/text", headers={"accept-encoding": "gzip"})
+    assert response.headers["content-encoding"] == "gzip"
+    assert response.headers["vary"] == "Origin, Accept-Encoding"
 
 
 @pytest.mark.parametrize(
@@ -223,6 +563,7 @@ class Auth:
         ("Bearer reader", "/admin/routes", 200),
         ("Bearer reader", "/admin/dependencies", 200),
         ("Bearer reader", "/admin/events", 200),
+        ("Bearer reader", "/admin/audit", 200),
         ("Bearer reader", "/admin/state", 200),
     ],
 )
@@ -254,6 +595,21 @@ async def test_admin_mutation_requires_write_role_and_explicit_authority(token, 
     async with TestClient(asgi) as client:
         response = await client.request("POST", "/admin/health/refresh", headers=headers)
         assert response.status == status
+        if status == 200:
+            audit = await client.request("GET", "/admin/audit", headers=headers)
+            assert audit.status == 200
+            assert audit.json()[-1]["action"] == "health.refresh"
+
+
+async def test_admin_rate_limit_returns_retry_after():
+    app, _ = compose(admin_enabled=True, admin_rate_limit=1, admin_rate_period=60)
+    asgi = ASGIApplication(app, authenticator=Auth())
+    headers = {"authorization": "Bearer reader"}
+    async with TestClient(asgi) as client:
+        assert (await client.request("GET", "/admin", headers=headers)).status == 200
+        limited = await client.request("GET", "/admin", headers=headers)
+    assert limited.status == 429
+    assert "retry-after" in limited.headers
 
 
 async def test_admin_disabled_and_protected_user_route():
@@ -314,3 +670,51 @@ async def test_duplicate_headers_and_query_parameters():
     assert request.query_parameters == {"x": ["1", "2"], "blank": [""]}
     with pytest.raises(KeyError):
         _ = headers["absent"]
+
+
+@pytest.mark.parametrize("values", [{1: "value"}, {"name": 1}, [(1, "value")]])
+def test_headers_reject_non_string_pairs(values):
+    with pytest.raises(TypeError, match="strings"):
+        Headers(values)
+
+
+async def test_middleware_lifecycle_is_ordered_and_failure_safe():
+    app = Application(ApplicationConfig(name="middleware-lifecycle"))
+    asgi = ASGIApplication(app)
+    calls: list[str] = []
+
+    class Managed:
+        async def startup(self):
+            calls.append("start")
+
+        async def shutdown(self):
+            calls.append("stop")
+
+        async def __call__(self, request, next_handler):
+            return await next_handler(request)
+
+    asgi.add_middleware(Managed())
+    async with TestClient(asgi):
+        assert calls == ["start"]
+    assert calls == ["start", "stop"]
+
+
+async def test_forwarded_header_is_supported_only_from_trusted_proxy():
+    app = Application(
+        ApplicationConfig(
+            name="forwarded-rfc",
+            trust_forwarded_headers=True,
+            trusted_proxies=("127.0.0.1/32",),
+        )
+    )
+    asgi = ASGIApplication(app)
+
+    @app.router.route("/request", name="request")
+    async def request_info(request):
+        return Response.json({"host": request.client_host, "scheme": request.scheme})
+
+    async with TestClient(asgi) as client:
+        trusted = await client.request(
+            "GET", "/request", headers={"forwarded": "for=203.0.113.8;proto=https"}
+        )
+        assert trusted.json() == {"host": "203.0.113.8", "scheme": "https"}

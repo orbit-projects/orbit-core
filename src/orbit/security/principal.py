@@ -13,18 +13,25 @@
 # limitations under the License.
 """Authorization principal derived from a verified identity."""
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 
 from orbit.security.identity import Identity
+from orbit.security.roles import validate_role_collection
 
 
 class Principal(BaseModel):
     """An identity and the roles Core may use for authorization decisions."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", validate_default=True)
 
     identity: Identity
-    roles: frozenset[str] = Field(default_factory=frozenset)
+    roles: frozenset[StrictStr] = Field(default_factory=frozenset)
+
+    @field_validator("roles")
+    @classmethod
+    def validate_roles(cls, value: frozenset[str]) -> frozenset[str]:
+        """Reject unsafe role text before it reaches authorization or audit output."""
+        return validate_role_collection(value)
 
 
 __all__ = ["Principal"]

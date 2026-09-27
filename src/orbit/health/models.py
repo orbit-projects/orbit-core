@@ -13,11 +13,19 @@
 # limitations under the License.
 """Models used to report application and service health."""
 
+from __future__ import annotations
+
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
+
+from orbit._immutability import freeze_mapping
+
+_MAX_DETAIL_ENTRIES = 2_048
+_MAX_DETAIL_KEY_LENGTH = 255
 
 
 class HealthStatus(StrEnum):
@@ -32,12 +40,45 @@ class HealthStatus(StrEnum):
 class HealthReport(BaseModel):
     """A typed health result suitable for diagnostics or HTTP responses."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", validate_default=True)
 
     status: HealthStatus = HealthStatus.UNKNOWN
-    message: str | None = None
+    message: StrictStr | None = Field(default=None, max_length=1024)
     checked_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     details: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("details", mode="before")
+    @classmethod
+    def validate_details(cls, value: object) -> dict[str, Any]:
+        """Bound operator-facing detail keys before they reach health or Admin responses."""
+        if not isinstance(value, Mapping):
+            raise TypeError("Health details must be a mapping.")
+        details = dict(value)
+        if len(details) > _MAX_DETAIL_ENTRIES:
+            raise ValueError(f"Health details cannot exceed {_MAX_DETAIL_ENTRIES} entries.")
+        if any(
+            not isinstance(key, str)
+            or not 1 <= len(key) <= _MAX_DETAIL_KEY_LENGTH
+            or any(ord(character) < 32 or ord(character) == 127 for character in key)
+            for key in details
+        ):
+            raise ValueError("Health detail keys must be bounded printable strings.")
+        return details
+
+    @model_validator(mode="after")
+    def validate_timestamp(self) -> HealthReport:
+        """Require an aware timestamp so reports can be compared across processes."""
+        if self.checked_at.tzinfo is None or self.checked_at.utcoffset() is None:
+            raise ValueError("Health report timestamps must include timezone information.")
+        if self.message is not None and any(
+            ord(character) < 32 or ord(character) == 127 for character in self.message
+        ):
+            raise ValueError("Health report messages must be printable text.")
+        return self
+
+    def model_post_init(self, __context: object) -> None:
+        """Freeze provider details so a recorded health report cannot be rewritten."""
+        object.__setattr__(self, "details", freeze_mapping(self.details))
 
 
 __all__ = ["HealthReport", "HealthStatus"]

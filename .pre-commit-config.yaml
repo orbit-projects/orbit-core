@@ -15,6 +15,16 @@ repos:
         entry: python scripts/check-license-headers.py
         language: system
         pass_filenames: false
+      - id: model-boundaries
+        name: model boundaries
+        entry: python scripts/check-model-boundaries.py
+        language: system
+        pass_filenames: false
+      - id: documentation
+        name: documentation policy
+        entry: python scripts/check-documentation.py
+        language: system
+        pass_filenames: false
       - id: ruff
         name: ruff
         entry: ruff check
