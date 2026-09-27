@@ -17,7 +17,9 @@ from typing import NewType
 from uuid import UUID, uuid4
 
 ApplicationId = NewType("ApplicationId", UUID)
+ConfigurationId = NewType("ConfigurationId", UUID)
 EventId = NewType("EventId", UUID)
+SubscriptionId = NewType("SubscriptionId", UUID)
 PluginId = NewType("PluginId", UUID)
 RouteId = NewType("RouteId", UUID)
 ServiceId = NewType("ServiceId", UUID)
@@ -30,14 +32,34 @@ def new_application_id() -> ApplicationId:
     return ApplicationId(uuid4())
 
 
+def new_configuration_id() -> ConfigurationId:
+    """Create a configuration-owner identity."""
+    return ConfigurationId(uuid4())
+
+
 def new_event_id() -> EventId:
     """Create an event identity."""
     return EventId(uuid4())
 
 
+def new_subscription_id() -> SubscriptionId:
+    """Create an in-process event subscription identity."""
+    return SubscriptionId(uuid4())
+
+
 def new_plugin_id() -> PluginId:
     """Create a plugin identity."""
     return PluginId(uuid4())
+
+
+def new_provider_id() -> ProviderId:
+    """Create a dependency-provider identity."""
+    return ProviderId(uuid4())
+
+
+def new_request_id() -> RequestId:
+    """Create a server-generated request identity."""
+    return RequestId(uuid4())
 
 
 def new_route_id() -> RouteId:
@@ -52,15 +74,21 @@ def new_service_id() -> ServiceId:
 
 __all__ = [
     "ApplicationId",
+    "ConfigurationId",
     "EventId",
     "PluginId",
     "ProviderId",
     "RequestId",
     "RouteId",
     "ServiceId",
+    "SubscriptionId",
     "new_application_id",
+    "new_configuration_id",
     "new_event_id",
     "new_plugin_id",
+    "new_provider_id",
+    "new_request_id",
     "new_route_id",
     "new_service_id",
+    "new_subscription_id",
 ]

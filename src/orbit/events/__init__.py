@@ -13,7 +13,21 @@
 # limitations under the License.
 """Typed in-process events and their dispatch bus."""
 
-from orbit.events.bus import EventBus
+from orbit.events.bus import Delivery, EventBus, EventFilter, FailurePolicy, Subscription
 from orbit.events.models import Event
+from orbit.events.store import EventStore, InMemoryEventStore, StoredEvent
+from orbit.events.transport import EventHandler, EventTransport
 
-__all__ = ["Event", "EventBus"]
+__all__ = [
+    "Event",
+    "EventBus",
+    "EventFilter",
+    "EventHandler",
+    "Delivery",
+    "EventStore",
+    "EventTransport",
+    "FailurePolicy",
+    "InMemoryEventStore",
+    "StoredEvent",
+    "Subscription",
+]

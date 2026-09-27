@@ -13,6 +13,7 @@
 # limitations under the License.
 """Explicit allowlisted discovery; imports are an execution trust boundary."""
 
+import re
 from collections.abc import Collection
 from importlib.metadata import entry_points
 
@@ -20,17 +21,39 @@ from orbit.errors import ErrorCategory, OrbitProblem, PluginError
 from orbit.plugins.contracts import PluginContract
 
 ENTRY_POINT_GROUP = "orbit.plugins"
+_ENTRY_POINT_NAME = re.compile(r"[a-z][a-z0-9_.-]{0,126}")
+
+
+def _validate_allowlist(allow: Collection[str]) -> tuple[str, ...]:
+    """Materialize the plugin execution allowlist without implicit string coercion."""
+    if isinstance(allow, (str, bytes)):
+        raise TypeError("Plugin allowlists must be collections of names, not scalar text.")
+    try:
+        names = tuple(allow)
+    except TypeError as exc:
+        raise TypeError("Plugin allowlists must be collections of names.") from exc
+    if any(not isinstance(name, str) for name in names):
+        raise TypeError("Plugin allowlists must contain only strings.")
+    if any(_ENTRY_POINT_NAME.fullmatch(name) is None for name in names):
+        raise ValueError("Plugin allowlist names must be bounded lowercase identifiers.")
+    if len(names) != len(set(names)):
+        raise ValueError("Plugin allowlists must not contain duplicate names.")
+    return names
 
 
 def discover_plugins(*, allow: Collection[str]) -> tuple[PluginContract, ...]:
-    """Load only named entry points, after validating duplicates and missing entries.
+    """Load only named entry points after validating the execution allowlist and entries.
 
-    No entry points are imported until their names match the caller's allowlist.
-    Allowlisting is authorization to execute installed plugin code, not sandboxing.
+    No package metadata is consulted for an empty allowlist, and no entry points are imported
+    until their names match the caller's validated allowlist. Allowlisting is authorization to
+    execute installed plugin code, not sandboxing.
     """
-    selected = [ep for ep in entry_points(group=ENTRY_POINT_GROUP) if ep.name in allow]
+    allowlist = _validate_allowlist(allow)
+    if not allowlist:
+        return ()
+    selected = [ep for ep in entry_points(group=ENTRY_POINT_GROUP) if ep.name in allowlist]
     names = [ep.name for ep in selected]
-    if len(names) != len(set(names)) or set(names) != set(allow):
+    if len(names) != len(set(names)) or set(names) != set(allowlist):
         raise PluginError(
             OrbitProblem(
                 code="plugin.discovery",

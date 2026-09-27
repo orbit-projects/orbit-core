@@ -13,7 +13,9 @@
 # limitations under the License.
 """Application-level views used by diagnostics and administrative surfaces."""
 
-from pydantic import BaseModel, ConfigDict
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
 from orbit.state import ApplicationState
 
@@ -21,10 +23,10 @@ from orbit.state import ApplicationState
 class ApplicationSummary(BaseModel):
     """A compact, serializable view of a running Orbit application."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", validate_default=True)
 
     state: ApplicationState
-    service_names: tuple[str, ...]
+    service_names: tuple[Annotated[StrictStr, Field(pattern=r"^[a-z][a-z0-9-]{0,62}$")], ...]
 
 
 __all__ = ["ApplicationSummary"]

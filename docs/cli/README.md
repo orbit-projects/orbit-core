@@ -16,15 +16,46 @@ Python code. A newly imported object describes this process, not a remote worker
 | orbit dependencies TARGET | Emit provider definitions without resolving factories |
 | orbit config TARGET | Emit redacted application and extension settings |
 | orbit health TARGET | Start an isolated instance, check health and cleanly stop |
-| orbit serve TARGET | Run the optional Uvicorn development host |
+| orbit health-watch TARGET | Stream health snapshots from one running lifecycle session |
+| orbit tasks TARGET | Emit registered background task state |
+| orbit events TARGET | Emit bounded event delivery metadata |
+| orbit diagnostics TARGET | Emit a bounded local diagnostics snapshot |
+| orbit diagnostics-watch TARGET | Stream newline-delimited local diagnostics snapshots |
+| orbit status TARGET | Report local lifecycle, liveness and readiness |
+| orbit doctor TARGET | Run non-invasive composition and configuration checks |
+| orbit serve TARGET | Run the unified Uvicorn or Gunicorn host |
+| orbit run TARGET | Alias for `serve` |
+| orbit start TARGET | Alias for `serve` |
+| orbit reload TARGET | Development Uvicorn source-reload mode |
 
-Inspection commands emit JSON for scripts. Errors go to stderr and failed validation/health
+Inspection commands emit detached JSON for scripts. Configuration mappings in composition
+snapshots are recursively immutable inside Core and provider inspection text is bounded and
+printable before serialization. Errors go to stderr and failed validation/health
 returns a nonzero exit code. Inspection does not call service hooks or discover plugins.
 Definitions added only by plugin setup become available during actual application configuration.
+Target syntax, import failures and target types are normalized into bounded CLI diagnostics;
+ordinary exception messages from imported application modules are not echoed to the operator.
+
+`orbit serve` accepts `--server uvicorn|gunicorn`, `--workers`, `--host`, `--port`, and `--reload`.
+Reload is valid only with Uvicorn. Gunicorn requires a `Runtime` target and uses the
+`uvicorn-worker` ASGI worker. Use the host's own options for proxy, TLS and process settings;
+Orbit's application limits remain in `ApplicationConfig`.
+
+`orbit run` and `orbit start` use the same hosting validation and options as `serve`; they are
+provided for operational scripts that distinguish launching from serving.
 
 Use the authenticated admin API to inspect live worker state. A local `orbit health` command
 does not prove that a separately deployed process is healthy. Install the `server` extra
-for the development hosting command.
+for either hosting mode.
+
+`orbit health-watch TARGET --interval 5 --iterations 10` emits one JSON health report per check
+and then exits. Finite watches accept at most 1,000,000 iterations; omit `--iterations` to
+continue until interrupted. A watch exits nonzero if any observed check is not ready.
+
+`orbit diagnostics-watch TARGET --interval 5 --iterations 10` uses the same bounded iteration
+policy and emits one newline-delimited diagnostics snapshot per check while one application
+lifecycle session remains open. It is intended for scripts and local operator observation; it
+does not connect to a separately deployed worker.
 
 Examples:
 ```bash

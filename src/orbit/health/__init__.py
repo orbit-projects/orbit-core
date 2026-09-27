@@ -13,7 +13,8 @@
 # limitations under the License.
 """Health contracts and aggregate health reporting."""
 
+from orbit.health.check import HealthCheck
 from orbit.health.health import HealthService
 from orbit.health.models import HealthReport, HealthStatus
 
-__all__ = ["HealthReport", "HealthService", "HealthStatus"]
+__all__ = ["HealthCheck", "HealthReport", "HealthService", "HealthStatus"]

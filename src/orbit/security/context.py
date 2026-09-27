@@ -27,6 +27,8 @@ def current_principal() -> Principal | None:
 
 def bind_principal(principal: Principal | None) -> Token[Principal | None]:
     """Bind a principal for the current context and return a reset token."""
+    if principal is not None and not isinstance(principal, Principal):
+        raise TypeError("Security context values must be Principal instances or None.")
     return _principal.set(principal)
 
 

@@ -14,7 +14,7 @@
 """Public errors, categories, and exception types for Orbit Core."""
 
 from orbit.errors.categories import ErrorCategory, ErrorSeverity
-from orbit.errors.error import OrbitProblem
+from orbit.errors.error import ErrorResponse, OrbitProblem
 from orbit.errors.exceptions import (
     ConfigurationError,
     ContainerError,
@@ -27,6 +27,7 @@ from orbit.errors.exceptions import (
 )
 
 __all__ = [
+    "ErrorResponse",
     "ConfigurationError",
     "ContainerError",
     "ErrorCategory",

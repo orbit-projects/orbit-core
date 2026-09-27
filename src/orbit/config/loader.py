@@ -23,10 +23,33 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from orbit._limits import _MAX_CONFIG_FILE_BYTES
 from orbit.config.models import ApplicationConfig
 from orbit.errors import ConfigurationError, ErrorCategory, OrbitProblem
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def _decode_application_scalars(
+    data: dict[str, Any], environment: Mapping[str, str], *, prefix: str
+) -> None:
+    """Decode primitive ORBIT_ values for strict application settings.
+
+    Generic extension settings intentionally retain scalar environment values as strings so
+    their Pydantic models own conversion policy. ``ApplicationConfig`` is different: its
+    operational limits are strict at the direct model boundary, so primitive environment
+    values are decoded before strict validation without weakening extension contracts.
+    """
+    for name, raw in environment.items():
+        parts = name[len(prefix) :].lower().split("__") if name.startswith(prefix) else ()
+        if len(parts) != 1 or parts[0] not in data or not isinstance(data[parts[0]], str):
+            continue
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, (bool, int, float)) or decoded is None:
+            data[parts[0]] = decoded
 
 
 def load_config(
@@ -48,6 +71,7 @@ def load_config(
     """
 
     def merge(target: dict[str, Any], source: Mapping[str, Any]) -> None:
+        """Recursively merge nested mappings without mutating the source configuration."""
         for key, value in source.items():
             if isinstance(value, Mapping):
                 existing = target.get(key)
@@ -60,17 +84,35 @@ def load_config(
 
     data: dict[str, Any] = {}
     try:
-        if not prefix or max_file_bytes <= 0:
-            raise ValueError("A nonempty prefix and positive file size limit are required.")
+        if (
+            not isinstance(model, type)
+            or not issubclass(model, BaseModel)
+            or not isinstance(prefix, str)
+            or not prefix
+            or isinstance(max_file_bytes, bool)
+            or not isinstance(max_file_bytes, int)
+            or not 1 <= max_file_bytes <= _MAX_CONFIG_FILE_BYTES
+            or (values is not None and not isinstance(values, Mapping))
+            or (environment is not None and not isinstance(environment, Mapping))
+            or (file is not None and not isinstance(file, Path))
+        ):
+            raise ValueError("Configuration loader arguments or file-size limit are invalid.")
+        if environment is not None and any(
+            not isinstance(name, str) or not isinstance(value, str)
+            for name, value in environment.items()
+        ):
+            raise ValueError("Configuration environment entries must be strings.")
+        explicit_values = values if values is not None else {}
+        supplied_environment = environment if environment is not None else {}
         if file is not None:
             with file.open("rb") as stream:
                 content = stream.read(max_file_bytes + 1)
             if len(content) > max_file_bytes:
                 raise ValueError("Configuration file exceeds size limit.")
             merge(data, tomllib.loads(content.decode("utf-8")))
-        merge(data, values or {})
+        merge(data, explicit_values)
         seen: set[tuple[str, ...]] = set()
-        for name, value in sorted((environment or {}).items()):
+        for name, value in sorted(supplied_environment.items()):
             if not name.startswith(prefix):
                 continue
             parts = name[len(prefix) :].lower().split("__")
@@ -94,6 +136,8 @@ def load_config(
                 merge(existing, decoded)
             else:
                 cursor[parts[-1]] = decoded
+        if model is ApplicationConfig:
+            _decode_application_scalars(data, supplied_environment, prefix=prefix)
         return model.model_validate(data)
     except (OSError, ValueError, RecursionError) as exc:
         fields = (

@@ -31,6 +31,13 @@ class Settings(BaseModel):
     names: list[str] = Field(default_factory=list)
 
 
+class FalseyMapping(dict):
+    """A populated mapping whose truth value is intentionally false."""
+
+    def __bool__(self) -> bool:
+        return False
+
+
 def test_json_environment_and_nested_override_preserve_other_layers(tmp_path):
     path = tmp_path / "settings.toml"
     path.write_text('[database]\nhost="file"\nports=[1111]\n')
@@ -49,6 +56,16 @@ def test_json_environment_and_nested_override_preserve_other_layers(tmp_path):
     assert settings.database.ports == [1111]
     assert settings.names == ["api", "worker"]
     assert values == {"database": {"host": "explicit"}}
+
+
+def test_falsey_mappings_are_not_treated_as_absent() -> None:
+    """Only ``None`` means that an optional configuration source was omitted."""
+    settings = load_config(
+        Settings,
+        values=FalseyMapping(database={"host": "explicit"}),
+        environment=FalseyMapping(ORBIT_DATABASE__HOST="environment"),
+    )
+    assert settings.database.host == "environment"
 
 
 @pytest.mark.parametrize(
@@ -71,3 +88,9 @@ def test_configuration_file_limit_is_enforced(tmp_path):
     path.write_text('names=["private"]')
     with pytest.raises(ConfigurationError):
         load_config(Settings, file=path, max_file_bytes=5)
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, float("nan"), 64 * 1024 * 1024 + 1])
+def test_configuration_file_limit_requires_positive_integer(limit):
+    with pytest.raises(ConfigurationError):
+        load_config(Settings, max_file_bytes=limit)

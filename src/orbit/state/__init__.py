@@ -13,8 +13,24 @@
 # limitations under the License.
 """Typed runtime state APIs."""
 
+from orbit.state.coordination import InMemoryStateCoordinator, Lease, StateCoordinator
 from orbit.state.models import ApplicationState
+from orbit.state.namespace import NamespaceTransaction, StateEntry, StateNamespace
+from orbit.state.provider import InMemoryStateProvider, StateProvider
 from orbit.state.state import State
-from orbit.state.store import StateStore
+from orbit.state.store import StateStore, StateTransaction
 
-__all__ = ["ApplicationState", "State", "StateStore"]
+__all__ = [
+    "ApplicationState",
+    "InMemoryStateCoordinator",
+    "Lease",
+    "State",
+    "NamespaceTransaction",
+    "StateEntry",
+    "StateNamespace",
+    "StateProvider",
+    "InMemoryStateProvider",
+    "StateCoordinator",
+    "StateStore",
+    "StateTransaction",
+]

@@ -31,15 +31,25 @@ class JSONFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         """Serialize an event without implicit request payload or credential capture."""
-        from orbit.runtime.context import current_application, current_request_id
+        from orbit.runtime.context import (
+            current_application,
+            current_correlation_id,
+            current_request_id,
+            current_span_id,
+            current_trace_id,
+        )
 
         application = current_application()
+        request_id = current_request_id()
         payload: dict[str, object] = {
             "timestamp": datetime.fromtimestamp(record.created, UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
-            "request_id": current_request_id(),
+            "request_id": str(request_id) if request_id is not None else None,
+            "correlation_id": current_correlation_id(),
+            "trace_id": current_trace_id(),
+            "span_id": current_span_id(),
         }
         if application is not None:
             payload["application_id"] = str(application.config.application.id)

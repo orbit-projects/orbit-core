@@ -14,5 +14,14 @@
 """Core-backed administrative inspection foundation."""
 
 from orbit.admin.application import AdminApplication
+from orbit.admin.client import AdminClient, AdminClientError, AdminHTTPResponse, AdminTransport
+from orbit.admin.contracts import AdminContribution
 
-__all__ = ["AdminApplication"]
+__all__ = [
+    "AdminContribution",
+    "AdminApplication",
+    "AdminClient",
+    "AdminClientError",
+    "AdminHTTPResponse",
+    "AdminTransport",
+]

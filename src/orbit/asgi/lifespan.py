@@ -31,14 +31,14 @@ async def handle_lifespan(
     receive: Receive,
     send: Send,
     *,
+    startup: Callable[[], Awaitable[None]] | None = None,
     shutdown: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Emit exactly one completion/failure per operation; startup failure terminates lifespan."""
     message = await receive()
-    if message["type"] != "lifespan.startup":
-        raise RuntimeError("Expected lifespan.startup.")
+    _require_message(message, "lifespan.startup")
     try:
-        await application.startup()
+        await (startup() if startup else application.startup())
     except Exception:
         _LOG.exception("Application startup failed")
         await send(
@@ -48,8 +48,7 @@ async def handle_lifespan(
     try:
         await send({"type": "lifespan.startup.complete"})
         message = await receive()
-        if message["type"] != "lifespan.shutdown":
-            raise RuntimeError("Expected lifespan.shutdown.")
+        _require_message(message, "lifespan.shutdown")
     except BaseException:
         await (shutdown() if shutdown else application.stop())
         raise
@@ -62,6 +61,12 @@ async def handle_lifespan(
         )
     else:
         await send({"type": "lifespan.shutdown.complete"})
+
+
+def _require_message(message: object, expected: str) -> None:
+    """Validate an incoming lifespan frame before reading protocol fields from it."""
+    if not isinstance(message, dict) or message.get("type") != expected:
+        raise RuntimeError(f"Expected {expected}.")
 
 
 __all__ = ["handle_lifespan"]

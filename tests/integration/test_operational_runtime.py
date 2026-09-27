@@ -16,9 +16,13 @@
 import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
+
+from pydantic import BaseModel
 
 from orbit import Application, ApplicationConfig
 from orbit.asgi import ASGIApplication, Response
+from orbit.container import Scope
 from orbit.diagnostics import JSONFormatter
 from orbit.plugins import Plugin, PluginMetadata
 from orbit.runtime.context import current_request_id
@@ -38,6 +42,93 @@ async def test_plugin_routes_are_composed_before_runtime_freezes():
     app.register_plugin(Extension())
     async with TestClient(ASGIApplication(app)) as client:
         assert (await client.request("GET", "/plugin")).body == b"plugin"
+
+
+async def test_openapi_endpoint_exposes_composed_routes():
+    app = Application(ApplicationConfig(name="openapi"))
+
+    @app.router.route("/hello/{name}", method="GET", name="hello")
+    async def hello(request):
+        return Response.text(request.path_parameters["name"])
+
+    async with TestClient(ASGIApplication(app)) as client:
+        response = await client.request("GET", "/openapi.json")
+    assert response.status == 200
+    assert response.json()["paths"]["/hello/{name}"]["get"]["operationId"] == "hello"
+
+
+async def test_metrics_endpoint_exposes_request_metrics():
+    app = Application(ApplicationConfig(name="metrics"))
+
+    @app.router.route("/", name="root")
+    async def root(request):
+        return Response.text("ok")
+
+    async with TestClient(ASGIApplication(app)) as client:
+        await client.request("GET", "/")
+        response = await client.request("GET", "/metrics")
+    assert response.status == 200
+    assert response.headers["content-type"] == "text/plain; version=0.0.4; charset=utf-8"
+    assert "orbit_http_requests_total" in response.body.decode()
+    exposition = response.body.decode()
+    assert "orbit_services_registered" in exposition
+    assert "orbit_tasks_registered" in exposition
+    assert "orbit_events_published" in exposition
+
+
+async def test_route_models_validate_request_and_response():
+    class Input(BaseModel):
+        value: int
+
+    class Output(BaseModel):
+        doubled: int
+
+    app = Application(ApplicationConfig(name="validation"))
+
+    @app.router.route(
+        "/double", method="POST", name="double", request_model=Input, response_model=Output
+    )
+    async def double(request):
+        return Response.json(Output(doubled=request.validated_body.value * 2))
+
+    async with TestClient(ASGIApplication(app)) as client:
+        valid = await client.request(
+            "POST", "/double", body=b'{"value": 4}', headers={"content-type": "application/json"}
+        )
+        invalid = await client.request(
+            "POST",
+            "/double",
+            body=b'{"value": "bad"}',
+            headers={"content-type": "application/json"},
+        )
+    assert valid.status == 200 and valid.json() == {"doubled": 8}
+    assert invalid.status == 422
+
+
+async def test_route_middleware_wraps_only_selected_route():
+    calls = []
+
+    async def middleware(request, next_handler):
+        calls.append("before")
+        response = await next_handler(request)
+        calls.append("after")
+        return response
+
+    app = Application(ApplicationConfig(name="route-middleware"))
+
+    @app.router.route("/selected", name="selected", middleware=(middleware,))
+    async def selected(request):
+        calls.append("handler")
+        return Response.text("selected")
+
+    @app.router.route("/plain", name="plain")
+    async def plain(request):
+        return Response.text("plain")
+
+    async with TestClient(ASGIApplication(app)) as client:
+        await client.request("GET", "/selected")
+        await client.request("GET", "/plain")
+    assert calls == ["before", "handler", "after"]
 
 
 async def test_overload_has_correlation_and_is_counted():
@@ -64,6 +155,63 @@ async def test_overload_has_correlation_and_is_counted():
         assert snapshot.status_counts == {503: 1, 200: 1}
 
 
+async def test_concurrent_admission_reuses_capacity_and_closes_failed_scopes():
+    """Bounded admission must preserve cleanup when accepted work fails concurrently."""
+    app = Application(ApplicationConfig(name="concurrent-cleanup", max_concurrent_requests=2))
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    started = 0
+    active = 0
+    closed = 0
+
+    @asynccontextmanager
+    async def request_resource(container):
+        nonlocal active, closed
+        active += 1
+        try:
+            yield object()
+        finally:
+            active -= 1
+            closed += 1
+
+    app.container.register_resource("request", request_resource, scope=Scope.SCOPED)
+
+    @app.router.route("/work", method="GET", name="work")
+    async def work(request):
+        nonlocal started
+        started += 1
+        sequence = started
+        await request.container.aresolve("request")
+        if sequence == 2:
+            entered.set()
+        await release.wait()
+        if sequence == 2:
+            raise RuntimeError("synthetic handler failure")
+        return Response.text(str(sequence))
+
+    async with TestClient(ASGIApplication(app)) as client:
+        first = asyncio.create_task(client.request("GET", "/work"))
+        second = asyncio.create_task(client.request("GET", "/work"))
+        await entered.wait()
+
+        rejected = await client.request("GET", "/work")
+        assert rejected.status == 503
+        assert active == 2
+
+        release.set()
+        successful, failed = await asyncio.gather(first, second)
+        assert successful.status == 200
+        assert failed.status == 500
+        assert active == 0
+        assert closed == 2
+
+        reusable = await client.request("GET", "/work")
+        assert reusable.status == 200
+
+    assert active == 0
+    assert closed == 3
+
+
 async def test_request_context_is_isolated_and_logged():
     app = Application(ApplicationConfig(name="correlation"))
 
@@ -72,7 +220,7 @@ async def test_request_context_is_isolated_and_logged():
         await asyncio.sleep(0)
         record = logging.LogRecord("worker", logging.INFO, "", 0, "handled", (), None)
         data = json.loads(JSONFormatter().format(record))
-        assert data["request_id"] == request.request_id == current_request_id()
+        assert data["request_id"] == str(request.request_id) == str(current_request_id())
         assert data["application"] == "correlation"
         return Response.json(data)
 

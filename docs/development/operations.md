@@ -1,13 +1,22 @@
 # Production operations and validation
 
-A process hosts one freshly composed Application per worker. Do not construct network
-connections before a worker fork. Keep startup/shutdown under the ASGI lifespan protocol.
-Set host shutdown grace periods above the time needed for request draining and sequential
+See the [deployment runbook](../deployment/README.md) for the complete Gunicorn and
+Uvicorn worker topology and proxy health contract.
+
+A Gunicorn master supervises Uvicorn workers. Each worker hosts one freshly composed Application;
+do not construct network connections before a worker fork. Keep startup/shutdown under ASGI
+lifespan. Uvicorn direct mode and Gunicorn worker mode use the same `Runtime.asgi` boundary.
+Set Gunicorn's graceful timeout above the time needed for request draining and sequential
 component/resource cleanup. Individual Core timeouts are not a single process-wide deadline.
+Gunicorn owns SIGTERM/SIGQUIT/SIGHUP and worker replacement; service hooks must be idempotent
+under a worker restart. Uvicorn reload is for development and must not be combined with Gunicorn
+workers.
 
 Configure request body limits and concurrency limits for the deployment's memory budget.
 Buffered body capacity can approach max_body_bytes × concurrent requests, plus application
-and response memory. Streaming responses also retain their scoped dependencies.
+and response memory. `max_concurrent_requests` defaults to 1,000 and cannot exceed the Core
+one-million capacity ceiling. Set max_response_bytes to bound each buffered or streamed response; streaming
+responses also retain their scoped dependencies.
 
 Use /health/live for process responsiveness and /health/ready for traffic admission.
 Readiness probes run current checks and share concurrent calls. Health checks must cooperate
@@ -33,12 +42,19 @@ Backend exporters should use queues with explicit backpressure policies.
 
 Run frozen dependency installation, lint and formatting checks, strict typing, behavioral
 coverage tests, license-header validation, package builds and dependency audit. CI defines
-a Python 3.11–3.14 matrix; local execution on one interpreter is not evidence for the others.
+a Python 3.11–3.14 matrix and runs the managed Gunicorn/Uvicorn worker smoke test on every
+matrix interpreter; local execution on one interpreter is not evidence for the others.
+The release workflow also runs `scripts/check-package.py` so a wheel and source archive are
+inspected for safe paths, regular archive members, matching project/version filenames, package
+contents, typing metadata, license inclusion and matching project metadata before provenance is
+requested.
 
 The release workflow builds only from main, repeats validation, produces distributions and
-a dependency CycloneDX inventory, and requests GitHub build provenance. The inventory covers
-the installed build/test environment, not just runtime dependencies. Hosted execution and
-attestation availability depend on repository settings.
+a dependency CycloneDX inventory, validates its JSON syntax, repeats the managed
+Gunicorn/Uvicorn worker smoke test, records and verifies SHA-256 checksums, and requests GitHub
+build provenance for the complete artifact directory. The inventory covers the installed
+build/test environment, not just runtime dependencies. Hosted execution and attestation
+availability depend on repository settings.
 
 The repository URL is https://github.com/orbit-projects/orbit_core. The current CODEOWNERS
 team entry still requires confirmation that the team exists and has write access.

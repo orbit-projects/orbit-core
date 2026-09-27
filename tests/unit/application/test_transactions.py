@@ -20,6 +20,7 @@ import pytest
 
 from orbit import Application, ApplicationConfig, Service, ServiceDescriptor
 from orbit.errors import LifecycleError
+from orbit.events import InMemoryEventStore
 from orbit.lifecycle import LifecyclePhase as Phase
 from orbit.plugins import Plugin, PluginMetadata
 
@@ -47,6 +48,11 @@ class Recorder(Service):
 
     async def stop(self):
         await self.hook("stop")
+
+
+class FailingEventStore(InMemoryEventStore):
+    async def close(self):
+        raise RuntimeError("event store close failed")
 
 
 @pytest.mark.parametrize("stage", ["configure", "initialize", "start"])
@@ -77,6 +83,15 @@ async def test_shutdown_attempts_all_services_and_aggregates_errors():
         await app.stop()
     assert len(caught.value.exceptions) == 2
     assert calls[-2:] == [("two", "stop"), ("one", "stop")]
+    assert app.lifecycle.phase is Phase.FAILED
+
+
+async def test_event_store_shutdown_failure_is_aggregated_and_marks_failure():
+    app = Application(ApplicationConfig(name="event-cleanup"), event_store=FailingEventStore())
+    await app.startup()
+    with pytest.raises(ExceptionGroup) as caught:
+        await app.stop()
+    assert any("event store close failed" in str(error) for error in caught.value.exceptions)
     assert app.lifecycle.phase is Phase.FAILED
 
 
@@ -186,6 +201,40 @@ async def test_failed_plugin_activation_is_cleaned():
     with pytest.raises(ValueError):
         await app.startup()
     assert calls == ["activate", "deactivate"]
+
+
+async def test_cancellation_resistant_plugin_activation_does_not_hang_rollback():
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    class Stubborn(Plugin):
+        metadata = PluginMetadata(name="orbit-stubborn", version="1.0.0")
+
+        async def activate(self):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release.wait()
+
+        async def deactivate(self):
+            calls.append("deactivate")
+
+    app = Application(ApplicationConfig(name="plugin-timeout", lifecycle_timeout=0.01))
+    app.register_plugin(Stubborn())
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(app.startup(), timeout=0.1)
+    assert started.is_set()
+    assert calls == []
+    assert app.lifecycle.phase is Phase.FAILED
+
+    release.set()
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if not app.plugins._detached_hooks:  # noqa: SLF001 - wait for test-owned cleanup.
+            break
+    assert not app.plugins._detached_hooks  # noqa: SLF001 - verify detached hook retirement.
 
 
 async def test_direct_registry_mutations_are_frozen():

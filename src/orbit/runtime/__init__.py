@@ -11,8 +11,33 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Runtime composition and context APIs."""
+"""Runtime composition, hosting and supervised task APIs."""
 
-from orbit.runtime.runtime import Runtime
+from typing import TYPE_CHECKING
 
-__all__ = ["Runtime"]
+from orbit.runtime.models import HostingConfig, HostServer, RuntimeInfo
+from orbit.runtime.tasks import RestartPolicy, TaskFailure, TaskInfo, TaskState, TaskSupervisor
+
+if TYPE_CHECKING:
+    from orbit.runtime.runtime import Runtime
+
+
+def __getattr__(name: str) -> object:
+    if name == "Runtime":
+        from orbit.runtime.runtime import Runtime
+
+        return Runtime
+    raise AttributeError(name)
+
+
+__all__ = [
+    "RestartPolicy",
+    "HostServer",
+    "HostingConfig",
+    "Runtime",
+    "RuntimeInfo",
+    "TaskFailure",
+    "TaskInfo",
+    "TaskState",
+    "TaskSupervisor",
+]

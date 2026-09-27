@@ -14,6 +14,7 @@
 """Health check failure isolation, timeouts and degradation."""
 
 import asyncio
+from datetime import datetime
 
 import pytest
 
@@ -42,3 +43,183 @@ async def test_reports_fail_closed(kind, expected):
     report = await HealthService().check({"check": Check()}, timeout=0.01)
     assert report.status.value == expected
     assert "private" not in report.model_dump_json()
+
+
+async def test_health_timeout_detaches_cancellation_resistant_check_without_blocking() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class StubbornCheck:
+        async def health(self):
+            started.set()
+            if release.is_set():
+                return HealthReport(status=HealthStatus.HEALTHY)
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release.wait()
+                return HealthReport(status=HealthStatus.HEALTHY)
+
+    service = HealthService()
+    check = StubbornCheck()
+    report = await asyncio.wait_for(service.check({"database": check}, timeout=0.01), timeout=0.1)
+    assert report.status is HealthStatus.UNHEALTHY
+    assert report.details["database"]["message"] == "Health check timed out."
+    assert started.is_set()
+
+    repeated = await service.check({"database": check}, timeout=0.01)
+    assert repeated.status is HealthStatus.UNHEALTHY
+    assert repeated.details["database"]["message"] == "Health check is still cancelling."
+
+    release.set()
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if not service._detached:  # noqa: SLF001 - wait for the test-owned detached check.
+            break
+    assert not service._detached  # noqa: SLF001 - verify detached cleanup completed.
+    recovered = await service.check({"database": check}, timeout=0.1)
+    assert recovered.status is HealthStatus.HEALTHY
+
+
+async def test_health_detached_tasks_are_isolated_per_check_name() -> None:
+    release = asyncio.Event()
+
+    class StubbornCheck:
+        async def health(self):
+            while not release.is_set():
+                try:
+                    await asyncio.sleep(0)
+                except asyncio.CancelledError:
+                    continue
+            return HealthReport(status=HealthStatus.HEALTHY)
+
+    class HealthyCheck:
+        async def health(self):
+            return HealthReport(status=HealthStatus.HEALTHY)
+
+    service = HealthService()
+    first = await service.check(
+        {"database": StubbornCheck(), "cache": HealthyCheck()}, timeout=0.01
+    )
+    assert first.status is HealthStatus.UNHEALTHY
+    assert first.details["database"]["message"] == "Health check timed out."
+    assert first.details["cache"]["status"] == "healthy"
+
+    second = await service.check(
+        {"database": StubbornCheck(), "cache": HealthyCheck()}, timeout=0.01
+    )
+    assert second.details["database"]["message"] == "Health check is still cancelling."
+    assert second.details["cache"]["status"] == "healthy"
+
+    release.set()
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if not service._detached:  # noqa: SLF001 - wait for test-owned detached work.
+            break
+    assert not service._detached  # noqa: SLF001 - verify per-check retirement.
+
+
+async def test_health_close_bounds_shutdown_for_cancellation_resistant_checks() -> None:
+    release = asyncio.Event()
+
+    class StubbornCheck:
+        async def health(self):
+            while not release.is_set():
+                try:
+                    await asyncio.sleep(0)
+                except asyncio.CancelledError:
+                    continue
+            return HealthReport(status=HealthStatus.HEALTHY)
+
+    service = HealthService()
+    await service.check({"database": StubbornCheck()}, timeout=0.01)
+    await asyncio.wait_for(service.close(timeout=0.01), timeout=0.1)
+    assert service._detached  # noqa: SLF001 - verify bounded shutdown retains late work.
+
+    release.set()
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if not service._detached:  # noqa: SLF001 - wait for test-owned cleanup.
+            break
+    assert not service._detached  # noqa: SLF001 - verify eventual retirement.
+
+
+async def test_cancelled_health_close_finishes_detached_cleanup_before_propagating() -> None:
+    """A cancelled health owner cannot abandon the service's detached checks."""
+    release = asyncio.Event()
+
+    class StubbornCheck:
+        async def health(self):
+            while not release.is_set():
+                try:
+                    await asyncio.sleep(0)
+                except asyncio.CancelledError:
+                    continue
+            return HealthReport(status=HealthStatus.HEALTHY)
+
+    service = HealthService()
+    await service.check({"database": StubbornCheck()}, timeout=0.01)
+    closing = asyncio.create_task(service.close(timeout=0.1))
+    await asyncio.sleep(0)
+    closing.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    await service.close(timeout=0.1)
+    assert not service._detached  # noqa: SLF001 - verify the shared close task completed.
+
+
+async def test_health_close_rejects_invalid_timeout() -> None:
+    service = HealthService()
+    with pytest.raises(ValueError, match="finite and positive"):
+        await service.close(timeout=0)
+    with pytest.raises(ValueError, match="finite and positive"):
+        await service.close(timeout=float("inf"))
+
+
+async def test_health_timeout_must_be_finite_and_positive():
+    with pytest.raises(ValueError, match="finite and positive"):
+        await HealthService().check({}, timeout=0)
+    with pytest.raises(ValueError, match="finite and positive"):
+        await HealthService().check({}, timeout=float("inf"))
+    with pytest.raises(ValueError, match="finite and positive"):
+        await HealthService().check({}, timeout="1")  # type: ignore[arg-type]
+
+
+async def test_health_check_registry_validates_bounded_contracts():
+    class Check:
+        async def health(self):
+            return HealthReport(status=HealthStatus.HEALTHY)
+
+    with pytest.raises(TypeError, match="mapping"):
+        await HealthService().check([], timeout=1)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="callable health"):
+        await HealthService().check({"broken": object()}, timeout=1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="bounded printable"):
+        await HealthService().check({"bad\nname": Check()}, timeout=1)
+    with pytest.raises(ValueError, match="bounded printable"):
+        await HealthService().check({"x" * 129: Check()}, timeout=1)
+    with pytest.raises(ValueError, match="cannot exceed"):
+        await HealthService().check({str(index): Check() for index in range(1001)}, timeout=1)
+
+
+def test_health_report_rejects_naive_timestamp():
+    with pytest.raises(ValueError, match="timezone"):
+        HealthReport(checked_at=datetime(2026, 1, 1))
+
+
+@pytest.mark.parametrize("message", ["bad\nmessage", "x" * 1025])
+def test_health_report_rejects_unsafe_messages(message: str) -> None:
+    with pytest.raises(ValueError):
+        HealthReport(message=message)
+
+
+@pytest.mark.parametrize("details", [{"bad\nkey": True}, {"x" * 256: True}])
+def test_health_report_rejects_unsafe_detail_keys(details: dict[str, bool]) -> None:
+    with pytest.raises(ValueError, match="detail keys"):
+        HealthReport(details=details)
+
+
+def test_health_report_bounds_detail_cardinality() -> None:
+    with pytest.raises(ValueError, match="cannot exceed"):
+        HealthReport(details={str(index): True for index in range(2_049)})

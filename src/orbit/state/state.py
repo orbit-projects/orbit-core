@@ -11,7 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""State facade for consumers that only need read access."""
+"""Read-oriented state facade for Core consumers and plugin integrations.
+
+The facade exposes application-owned state without coupling consumers to a persistence backend.
+Durable or distributed state is supplied through a provider plugin.
+"""
 
 from orbit.state.models import ApplicationState
 from orbit.state.store import StateStore

@@ -17,12 +17,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+from orbit._limits import is_finite_number
 from orbit.asgi.application import ASGIApplication
 from orbit.asgi.request import Headers
 from orbit.asgi.types import Message
@@ -35,6 +35,19 @@ class TestResponse:
     status: int
     headers: Headers
     body: bytes
+
+    def __post_init__(self) -> None:
+        """Validate captured response data even when a test constructs it directly."""
+        if (
+            isinstance(self.status, bool)
+            or not isinstance(self.status, int)
+            or not 200 <= self.status <= 599
+        ):
+            raise ValueError("Test response status must be final (200..599).")
+        if not isinstance(self.headers, Headers):
+            raise TypeError("Test response headers must be validated Headers.")
+        if not isinstance(self.body, bytes):
+            raise TypeError("Test response body must be bytes.")
 
     def json(self) -> Any:
         """Decode response JSON for assertions."""
@@ -51,7 +64,12 @@ class TestClient:
     __test__ = False
 
     def __init__(self, application: ASGIApplication, *, lifespan_timeout: float = 60) -> None:
-        if not math.isfinite(lifespan_timeout) or lifespan_timeout <= 0:
+        if (
+            isinstance(lifespan_timeout, bool)
+            or not isinstance(lifespan_timeout, (int, float))
+            or not is_finite_number(lifespan_timeout)
+            or lifespan_timeout <= 0
+        ):
             raise ValueError("lifespan_timeout must be finite and positive.")
         self.application = application
         self._timeout = lifespan_timeout
@@ -79,7 +97,8 @@ class TestClient:
         return self
 
     async def __aexit__(self, *exc: object) -> None:
-        assert self._lifespan is not None
+        if self._lifespan is None:
+            raise RuntimeError("TestClient lifespan was not started.")
         self._active = False
         await self._incoming.put({"type": "lifespan.shutdown"})
         try:
@@ -94,11 +113,16 @@ class TestClient:
                 await asyncio.gather(self._lifespan, return_exceptions=True)
 
     async def _wait_lifespan(self) -> Message:
-        assert self._lifespan is not None
+        if self._lifespan is None:
+            raise RuntimeError("TestClient lifespan was not started.")
         message = asyncio.create_task(self._outgoing.get())
         try:
             async with asyncio.timeout(self._timeout):
                 await asyncio.wait((message, self._lifespan), return_when=asyncio.FIRST_COMPLETED)
+                if self._lifespan.done() and not self._lifespan.cancelled():
+                    error = self._lifespan.exception()
+                    if error is not None:
+                        raise error
                 if message.done():
                     return message.result()
                 if not self._outgoing.empty():
@@ -121,12 +145,31 @@ class TestClient:
         """Send a complete buffered HTTP request and verify response framing."""
         if not self._active:
             raise RuntimeError("Send requests inside the TestClient context manager.")
+        if not isinstance(method, str) or not method:
+            raise TypeError("Request method must be a nonempty string.")
+        if not isinstance(path, str):
+            raise TypeError("Request path must be a string.")
+        if not isinstance(body, bytes):
+            raise TypeError("Request body must be bytes.")
         url = urlsplit(path)
-        pairs = headers.items() if isinstance(headers, Mapping) else (headers or ())
+        pairs = (
+            headers.items()
+            if isinstance(headers, Mapping)
+            else (headers if headers is not None else ())
+        )
+        wire_headers: list[tuple[bytes, bytes]] = []
+        for name, value in pairs:
+            if not isinstance(name, str) or not isinstance(value, str):
+                raise TypeError("Request header names and values must be strings.")
+            try:
+                wire_headers.append((name.encode("latin-1"), value.encode("latin-1")))
+            except UnicodeEncodeError as exc:
+                raise ValueError("Request headers must be Latin-1 encodable.") from exc
         messages: list[Message] = []
         received = False
 
         async def receive() -> Message:
+            """Provide one complete request frame, then model client disconnect."""
             nonlocal received
             if received:
                 return {"type": "http.disconnect"}
@@ -134,6 +177,7 @@ class TestClient:
             return {"type": "http.request", "body": body, "more_body": False}
 
         async def send(message: Message) -> None:
+            """Validate ASGI response ordering while collecting test-client frames."""
             if not messages:
                 if message["type"] != "http.response.start":
                     raise AssertionError("Response body preceded response start.")
@@ -156,8 +200,9 @@ class TestClient:
                 "scheme": url.scheme or "http",
                 "http_version": "1.1",
                 "root_path": "",
+                "client": ("127.0.0.1", 54321),
                 "query_string": url.query.encode(),
-                "headers": [(k.encode("latin-1"), v.encode("latin-1")) for k, v in pairs],
+                "headers": wire_headers,
             },
             receive,
             send,

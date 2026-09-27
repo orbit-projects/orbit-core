@@ -13,8 +13,9 @@
 # limitations under the License.
 """Lifecycle state machine and observation APIs."""
 
+from orbit.lifecycle.contracts import LifecycleObserver
 from orbit.lifecycle.lifecycle import Lifecycle
 from orbit.lifecycle.phase import LifecyclePhase
 from orbit.lifecycle.transition import LifecycleTransition
 
-__all__ = ["Lifecycle", "LifecyclePhase", "LifecycleTransition"]
+__all__ = ["Lifecycle", "LifecycleObserver", "LifecyclePhase", "LifecycleTransition"]
