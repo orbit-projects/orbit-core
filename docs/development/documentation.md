@@ -27,6 +27,13 @@ the implementation changes. Do not leave TODO, FIXME, HACK, or WIP markers in ma
 Structured Core mappings are detached and recursively immutable. Their nested containers must stay
 within the documented depth and work budget; cycles are invalid input rather than a supported data
 model, because they cannot be serialized safely through diagnostics, administration, or events.
+Every nested key in a JSON-shaped structured model mapping must also be bounded printable text, so
+a nested byte or control-bearing key cannot bypass a model's JSON and operator-safety boundary.
+Operator-facing diagnostic identifiers, including exception type names, must also remain bounded
+and identifier-shaped. Treat application-defined exception classes as untrusted metadata: retain a
+safe type name when possible and use a generic category when their class name is unsafe.
+Likewise, validate optional structured error codes before retaining them in audit records; a custom
+adapter's convenience attribute is not a trusted replacement for a Core error model.
 
 Examples must be executable in principle, use public APIs, and make lifecycle ownership explicit.
 They must not embed credentials, provider payloads, or claims that a process-local reference

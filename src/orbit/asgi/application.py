@@ -30,7 +30,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from orbit._limits import _MAX_CORE_CAPACITY
+from orbit._limits import _MAX_CORE_CAPACITY, safe_exception_type_name
 from orbit.asgi.lifespan import handle_lifespan
 from orbit.asgi.middleware import Middleware, NextHandler
 from orbit.asgi.request import MAX_PATH_BYTES, Headers, HTTPError, Request
@@ -159,7 +159,7 @@ class ASGIApplication:
             for failure in cleanup_failures:
                 _LOG.error(
                     "Startup cleanup failed after middleware startup error",
-                    extra={"error_type": type(failure).__name__},
+                    extra={"error_type": safe_exception_type_name(failure)},
                 )
             raise
 
@@ -212,7 +212,9 @@ class ASGIApplication:
                 raise TimeoutError("Middleware lifecycle hook exceeded its deadline.")
             task.result()
         except asyncio.CancelledError:
-            if not task.done():
+            if task.done():
+                self._retire_middleware_hook(task)
+            else:
                 self._detach_middleware_hook(task)
             raise
 
@@ -271,7 +273,9 @@ class ASGIApplication:
             await send({"type": "websocket.close", "code": 1003})
             return
         if kind != "http":
-            raise RuntimeError(f"Unsupported ASGI scope: {kind}")
+            # Scope types originate at the host boundary. Do not interpolate an unbounded
+            # or attacker-controlled value into an exception or host log message.
+            raise RuntimeError("Unsupported ASGI scope type.")
         config = self._application.config.application
         rejected = self._draining or len(self._requests) >= config.max_concurrent_requests
         task = asyncio.current_task()
@@ -611,6 +615,8 @@ class ASGIApplication:
         if root and (path == root or path.startswith(root + "/")):
             path = path[len(root) :] or "/"
         self._validate_request_path(path)
+        # Resolve proxy-derived identity once so host and port share one fail-closed decision.
+        client_host, client_port = self._client(scope, headers)
         return Request(
             method=method.upper(),
             path=path,
@@ -619,8 +625,8 @@ class ASGIApplication:
             query_string=query_string,
             request_id=request_id,
             root_path=root,
-            client_host=self._client(scope, headers)[0],
-            client_port=self._client(scope, headers)[1],
+            client_host=client_host,
+            client_port=client_port,
             scheme=self._scheme(scope, headers),
         )
 
@@ -744,6 +750,8 @@ class ASGIApplication:
             try:
                 ip_address(candidate)
             except ValueError:
+                # A trusted proxy may still send malformed forwarding metadata. Fail closed by
+                # retaining the socket peer instead of allowing unvalidated identity text through.
                 pass
             else:
                 host, port = candidate, None

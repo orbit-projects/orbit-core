@@ -4,7 +4,8 @@
 Counters, gauges and histograms validate names and labels, reject non-finite values, and cap
 the number of metric definitions, histogram buckets, and label series to prevent unbounded
 cardinality. `MetricSnapshot` repeats the metric kind, value, count, sum, label, and bucket
-validation when an exporter or adapter constructs a snapshot directly. Call `snapshots()` to obtain
+validation when an exporter or adapter constructs a snapshot directly; labels and buckets are
+detached while validating, so inaccurate custom mapping lengths cannot bypass the caps. Call `snapshots()` to obtain
 detached, recursively read-only values for a Prometheus, OpenTelemetry or other exporter;
 diagnostic status-count mappings follow the same immutable snapshot contract.
 Histogram snapshots also require cumulative, nondecreasing bucket counts that do not exceed the
@@ -17,6 +18,9 @@ Metric updates also reject overflow-sized integers and cumulative totals that wo
 non-finite, so Prometheus exposition cannot silently emit `Infinity` from local arithmetic.
 Request diagnostics perform the same cumulative-duration preflight before retaining history or
 updating counters, so a rejected record cannot partially mutate the diagnostic snapshot.
+`DiagnosticSnapshot` also applies Core's capacity policy to direct request-history and
+latency-bucket construction, keeping detached operator payloads bounded even when they do not
+originate from `Diagnostics.collect()`.
 `DiagnosticSnapshot` also validates that aggregate request, error, cancellation, disconnection,
 and per-status totals are nonnegative and internally coherent before the snapshot is retained or
 serialized.
@@ -48,7 +52,8 @@ health gauges. Status values are limited to Core's four health states, and plugi
 namespaced, so a component's current health can be queried without unbounded status labels.
 
 `Diagnostics.subscribe()` requires a sink with a callable `record()` method; sink failures are
-logged and isolated from request processing. `JSONFormatter` emits structured standard-library log records with application, request,
+logged with a constant message and isolated from request processing, so provider exception text
+does not enter Core's default diagnostic log. `JSONFormatter` emits structured standard-library log records with application, request,
 correlation, trace and span IDs while excluding exception messages and arbitrary record extras.
 The ASGI boundary binds a request correlation ID and span, and accepts a valid W3C
 `traceparent` trace ID; malformed or untrusted trace headers are ignored. Context variables are
@@ -59,8 +64,9 @@ surface. Pass a tracer to `Runtime(..., tracer=tracer)` or `ASGIApplication` to 
 span per request. Nested spans inherit the W3C trace ID and parent span ID, capture bounded
 printable attributes (at most 128 attributes per span), and record `ok` or `error` status on
 completion. `SpanRecord` validates bounded printable IDs, finite nonnegative timing, and allowed
-statuses at the public snapshot boundary. Retained span attributes are detached from caller-owned mappings and recursively frozen
-so exporters cannot mutate diagnostic history. OpenTelemetry and other exporters can implement the
+statuses at the public snapshot boundary. Retained span attributes are detached from caller-owned
+mappings while validating and recursively frozen so exporters cannot mutate diagnostic history.
+OpenTelemetry and other exporters can implement the
 same protocols without adding a backend dependency to Core. Span history sizes, span names, and
 attribute names are validated at construction or use so malformed diagnostic metadata cannot leak
 incidental Python type errors.

@@ -23,6 +23,11 @@ Use Gunicorn with the `uvicorn-worker` package for managed workers:
 orbit serve app:runtime --server gunicorn --workers 4
 ```
 
+Orbit disables Uvicorn's host-level proxy identity rewriting in both modes. Core therefore
+receives the direct ASGI peer and applies `trust_forwarded_headers` plus `trusted_proxies`
+itself. Manual Gunicorn/Uvicorn deployments must keep `forwarded_allow_ips` empty; otherwise
+the host may rewrite a malformed forwarded identity before Core can reject it.
+
 Managed hosting also exposes validated worker controls: `--worker-timeout`, `--keep-alive`,
 `--max-requests`, and `--max-requests-jitter`. These map to Gunicorn's silence timeout,
 HTTP keep-alive, and bounded worker recycling. Direct Uvicorn receives the keep-alive setting;
@@ -51,7 +56,9 @@ The [ASGI HTTP specification](https://asgi.readthedocs.io/en/latest/specs/www.ht
 the host/framework boundary. The host supplies decoded paths and body chunks, and owns
 HTTP parsing, transfer encoding, TLS and worker processes. Core never decodes the path twice.
 ASGI scopes must be dictionary mappings with a string `type`; malformed scope objects fail with
-an explicit protocol error before request state or diagnostics are created.
+an explicit bounded protocol error before request state or diagnostics are created. Unsupported
+scope types are rejected with a constant diagnostic, so host-provided scope text cannot become an
+unbounded exception or log payload.
 The ASGI `path` and `raw_path` are both validated: dot segments, repeated slashes, backslashes,
 query/fragment delimiters, controls, malformed escapes, and encoded separators are rejected.
 Ordinary encoded characters remain valid, including a dot inside a name such as `file%2Etxt`.
@@ -77,11 +84,13 @@ HTTP headers are bounded by `max_header_bytes` (64 KiB by default), by a 1,000-f
 decoded and mounted root paths are bounded by 16 KiB; malformed header frames are rejected before
 dispatch. A request may contain at most 100,000 ASGI `http.request` frames, including empty body frames. Response headers use the same
 64 KiB safety budget and a 1000-field
-cap. When a `Host` header is supplied, exactly one bounded authority is accepted; malformed ports,
+cap, including the runtime-generated `Content-Length` on buffered responses. When a `Host` header is supplied, malformed ports,
 unbracketed IPv6, unsafe authority delimiters, and non-ASCII values fail closed. HTTP bodies are buffered up to `max_body_bytes`, and buffered or streamed responses are
 bounded by `max_response_bytes` (16 MiB by default). Both declared Content-Length and cumulative
-received bytes are checked. Repeated or malformed Content-Length is rejected; extreme numeric
-values cannot become an internal integer-conversion error. Repeated headers remain distinct. The
+received bytes are checked. Conflicting, malformed, or ASGI-preserved repeated Content-Length
+fields are rejected; an HTTP host may normalize identical wire fields before Core receives the
+scope, as permitted by the HTTP framing rules. Extreme numeric values cannot become an internal
+integer-conversion error. Repeated headers remain distinct. The
 single-valued `Content-Type` and `Cookie` fields are rejected when repeated, and duplicate cookie
 names within one field are rejected, so conflicting media-type or session interpretations fail
 closed at the request boundary; response `Content-Type` is also single-valued. The
@@ -198,11 +207,14 @@ as one list; duplicate gzip or wildcard entries, and duplicate quality parameter
 ambiguous and disable compression. Quality values use the HTTP qvalue grammar (`0` through `1`
 with at most three fractional digits); malformed values and case-insensitive duplicate `q` names
 disable compression.
+Negotiation also caps the combined `Accept-Encoding` text at 64 KiB and the token count at 1,024
+before matching, so a client cannot turn compression negotiation into unbounded parsing work.
 
 `Request.cookies` parses a bounded Cookie header into a detached mapping and rejects duplicate
 cookie names instead of selecting the last parser value. `Response.with_cookie`
 builds a validated `Set-Cookie` value and appends it without folding existing repeated cookies;
-cookie names/values and attributes are safe text, `secure`/`httponly` are strict booleans,
+cookie names/values and attributes are safe text without semicolon attribute injection,
+`secure`/`httponly` are strict booleans,
 `SameSite=None` requires `Secure`, and `max_age` must be a nonnegative integer;
 cookie parsing or attribute errors become explicit request/configuration errors before bytes are
 sent.
@@ -238,3 +250,7 @@ field-name semantics.
 bounded string key; Core preserves callable objects even when their boolean value is false.
 Wildcard origins cannot be combined with credentials. Allowed responses include `Vary: Origin`,
 and rejected preflights return a structured 403 without reflecting the untrusted origin.
+Configured origin, method, and header policies are bounded to 1,024 entries with bounded text
+values. Request origins and preflight method/header lists are validated and bounded before policy
+matching, so untrusted browser metadata cannot create disproportionate matching work or an
+unbounded token collection.

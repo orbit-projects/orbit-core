@@ -72,7 +72,15 @@ class OAuthAuthorizationRequest(BaseModel):
         return value
 
     def model_post_init(self, __context: object) -> None:
-        """Require PKCE consistency and reject the weak ``plain`` challenge method."""
+        """Require PKCE consistency and reject the weak ``plain`` challenge method.
+
+        RFC 7636 treats an omitted method as ``plain``. Orbit's Core contract
+        deliberately requires S256, so a challenge without an explicit method
+        must be rejected instead of allowing an adapter to apply that weaker
+        default implicitly.
+        """
+        if self.code_challenge is not None and self.code_challenge_method is None:
+            raise ValueError("code_challenge_method=S256 is required with a PKCE challenge.")
         if self.code_challenge_method is not None and self.code_challenge is None:
             raise ValueError("code_challenge is required when a method is supplied.")
         if self.code_challenge_method == "plain":

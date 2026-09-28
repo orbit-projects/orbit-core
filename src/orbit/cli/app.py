@@ -23,16 +23,18 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import os
 import re
-import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import typer
 from pydantic import ValidationError
 from rich.console import Console
 
+from orbit._limits import safe_exception_type_name
 from orbit._version import __version__
 from orbit.application import Application
 from orbit.config import ApplicationConfig
@@ -116,6 +118,20 @@ def inspect_application(target: str) -> None:
 def _inspect_section(target: str, section: str) -> None:
     snapshot = inspect_composition(_application(target))
     typer.echo(json.dumps(snapshot.model_dump(mode="json")[section], indent=2))
+
+
+def _ensure_host_dependencies(server: HostServer) -> ModuleType | None:
+    """Load the selected host module or emit a bounded missing-extra diagnostic."""
+    required_modules = (
+        ("uvicorn",) if server is HostServer.UVICORN else ("gunicorn", "uvicorn_worker")
+    )
+    try:
+        imported = {module: importlib.import_module(module) for module in required_modules}
+    except ImportError:
+        # Disable Rich markup so the literal extra name remains copyable in the diagnostic.
+        console.print("Install orbit-core[server] to use the selected host.", markup=False)
+        raise typer.Exit(1) from None
+    return imported.get("uvicorn")
 
 
 @app.command()
@@ -328,12 +344,12 @@ def doctor(target: str) -> None:
         application.validate()
         checks["composition"] = "ok"
     except (OrbitError, ValueError) as exc:
-        checks["composition"] = type(exc).__name__
+        checks["composition"] = safe_exception_type_name(exc)
     try:
         application.config.inspect()
         checks["configuration"] = "ok"
     except Exception as exc:
-        checks["configuration"] = type(exc).__name__
+        checks["configuration"] = safe_exception_type_name(exc)
     result = {
         "status": "healthy" if all(value == "ok" for value in checks.values()) else "failed",
         "checks": checks,
@@ -387,13 +403,9 @@ def serve(
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
     value = load_target(target)
-    try:
-        if server == "uvicorn":
-            import uvicorn
-    except ImportError:
-        console.print("Install orbit-core[server] to use the selected host.")
-        raise typer.Exit(1) from None
+    uvicorn = _ensure_host_dependencies(HostServer(server))
     if server == "uvicorn":
+        assert uvicorn is not None  # validated by _ensure_host_dependencies above
         if (reload or workers > 1) and not isinstance(value, Runtime):
             raise typer.BadParameter(
                 "--reload and multiple workers require a Runtime target (app:runtime)."
@@ -408,6 +420,10 @@ def serve(
                 reload=reload,
                 workers=workers,
                 timeout_keep_alive=hosting.keep_alive,
+                # Orbit validates forwarded identity against its own typed proxy policy.
+                # Do not let Uvicorn rewrite the ASGI peer before Core sees the request.
+                proxy_headers=False,
+                forwarded_allow_ips="",
             )
         else:
             uvicorn.run(
@@ -416,6 +432,9 @@ def serve(
                 port=port,
                 lifespan="on",
                 timeout_keep_alive=hosting.keep_alive,
+                # Orbit validates forwarded identity against its own typed proxy policy.
+                proxy_headers=False,
+                forwarded_allow_ips="",
             )
         return
     if reload:
@@ -433,6 +452,10 @@ def serve(
         str(workers),
         "--worker-class",
         "uvicorn_worker.UvicornWorker",
+        # Keep the host from rewriting the ASGI peer before Orbit applies its
+        # trusted-proxy and malformed-forwarded-header checks.
+        "--forwarded-allow-ips",
+        "",
         "--graceful-timeout",
         str(hosting.graceful_timeout),
         "--timeout",
@@ -445,7 +468,9 @@ def serve(
         if max_requests_jitter:
             command.extend(["--max-requests-jitter", str(max_requests_jitter)])
     try:
-        raise typer.Exit(subprocess.call(command))
+        # Replace the CLI process so Gunicorn is the supervised PID and receives
+        # SIGTERM/SIGHUP directly from containers and service managers.
+        os.execv(command[0], command)
     except FileNotFoundError:
         console.print("Install orbit-core[server] to use Gunicorn hosting.")
         raise typer.Exit(1) from None

@@ -51,8 +51,10 @@ slugs. Each `inspect()` returns a Pydantic model from an awaitable and has a hea
 A failing or timed-out contribution appears as unavailable without disabling Core views;
 exception messages are not returned to clients. A cancellation-resistant contribution is detached
 and only one late inspection is retained per extension, so repeated admin requests cannot create
-an unbounded set of orphan tasks. Extension implementations must use Pydantic secret types and
-avoid blocking synchronous operations.
+an unbounded set of orphan tasks. Concurrent requests for the same extension also fail closed
+while its first inspection is still running, so the registry cannot be overwritten by racing
+requests. Extension implementations must use Pydantic secret types and avoid blocking synchronous
+operations.
 
 Core does not hot-install packages or rewire a running service graph. Plugin composition is
 frozen at startup. Package installation and identity-provider administration belong to

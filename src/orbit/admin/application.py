@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
+from orbit._limits import safe_exception_type_name
 from orbit.admin.models import AdminOverview
 from orbit.asgi.request import Headers, HTTPError, Request
 from orbit.asgi.response import Response
@@ -41,6 +42,15 @@ if TYPE_CHECKING:
 
 _LOG = logging.getLogger(__name__)
 _ADMIN_TARGET_NAME = re.compile(r"[a-z][a-z0-9-]{0,62}")
+
+
+def _audit_error_code(error: Exception) -> str:
+    """Return a valid audit identifier without trusting custom exception attributes."""
+    problem = getattr(error, "problem", None)
+    code = getattr(problem, "code", None)
+    if isinstance(code, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,126}", code):
+        return code
+    return safe_exception_type_name(error)
 
 
 class AdminApplication:
@@ -103,12 +113,11 @@ class AdminApplication:
             except KeyError:
                 return Response.json({"code": "tasks.not-found"}, status=404)
             except Exception as exc:
-                problem = getattr(exc, "problem", None)
                 self._application.record_admin_audit(
                     "task.restart",
                     target=name,
                     success=False,
-                    error_code=getattr(problem, "code", type(exc).__name__),
+                    error_code=_audit_error_code(exc),
                 )
                 raise
             self._application.record_admin_audit("task.restart", target=name, success=True)
@@ -137,12 +146,11 @@ class AdminApplication:
             except KeyError:
                 return Response.json({"code": "services.not-found"}, status=404)
             except Exception as exc:
-                problem = getattr(exc, "problem", None)
                 self._application.record_admin_audit(
                     f"service.{action}",
                     target=name,
                     success=False,
-                    error_code=getattr(problem, "code", type(exc).__name__),
+                    error_code=_audit_error_code(exc),
                 )
                 raise
             status = {
@@ -164,11 +172,10 @@ class AdminApplication:
             try:
                 report = await self._application.health()
             except Exception as exc:
-                problem = getattr(exc, "problem", None)
                 self._application.record_admin_audit(
                     "health.refresh",
                     success=False,
-                    error_code=getattr(problem, "code", type(exc).__name__),
+                    error_code=_audit_error_code(exc),
                 )
                 raise
             self._application.record_admin_audit("health.refresh", success=True)

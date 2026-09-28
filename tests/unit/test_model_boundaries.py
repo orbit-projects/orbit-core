@@ -13,14 +13,18 @@
 # limitations under the License.
 """Nested mutability regressions for Core's public structured models."""
 
-from datetime import UTC, datetime
+from collections.abc import Iterator, Mapping
+from copy import copy, deepcopy
+from datetime import UTC, datetime, timedelta, tzinfo
 from types import MappingProxyType
 
 import pytest
 
+from orbit._immutability import FrozenDict, freeze_mapping, freeze_value, validate_mapping
 from orbit.admin.models import AdminAuditRecord
 from orbit.application.models import ApplicationSummary
 from orbit.container import Scope
+from orbit.diagnostics import DiagnosticSnapshot, LatencyBucket, RequestRecord
 from orbit.diagnostics.inspection import CompositionSnapshot, ProviderDescription
 from orbit.errors import ErrorCategory, ErrorResponse, OrbitProblem
 from orbit.events import Event
@@ -29,7 +33,41 @@ from orbit.security import OAuthTokenResponse
 from orbit.services import ServiceDescriptor
 from orbit.state import ApplicationState
 from orbit.state.models import ComponentState
-from orbit.types import new_application_id, new_configuration_id, new_provider_id
+from orbit.types import new_application_id, new_configuration_id, new_provider_id, new_request_id
+
+
+class _MisreportingMapping(Mapping[str, object]):
+    """Mapping that reports no entries but yields more than a configured safety bound."""
+
+    def __init__(self, count: int) -> None:
+        self._count = count
+
+    def __getitem__(self, key: str) -> object:
+        index = int(key)
+        if 0 <= index < self._count:
+            return True
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(str(index) for index in range(self._count))
+
+    def __len__(self) -> int:
+        return 0
+
+
+class _MisreportingStatusCounts(Mapping[int, int]):
+    """Status-count mapping that reports no entries but yields 501 valid HTTP statuses."""
+
+    def __iter__(self) -> Iterator[int]:
+        return iter((*range(100, 600), 599))
+
+    def __getitem__(self, key: int) -> int:
+        if 99 <= key <= 599:
+            return 1
+        raise KeyError(key)
+
+    def __len__(self) -> int:
+        return 0
 
 
 @pytest.mark.parametrize(
@@ -117,6 +155,13 @@ def test_structured_models_reject_cyclic_or_excessively_nested_values() -> None:
         HealthReport(details={"nested": nested})
 
 
+@pytest.mark.parametrize("key", [b"bytes-key", "control\nkey", "x" * 256])
+def test_structured_models_reject_unsafe_nested_mapping_keys(key: object) -> None:
+    """Nested mapping keys cannot bypass JSON-safe Core metadata contracts."""
+    with pytest.raises(ValueError, match="Structured mapping keys"):
+        Event(name="orders.created", payload={}, metadata={"nested": {key: "value"}})
+
+
 def test_structured_models_freeze_nested_mapping_implementations() -> None:
     model = Event(
         name="orders.created",
@@ -127,12 +172,65 @@ def test_structured_models_freeze_nested_mapping_implementations() -> None:
         model.metadata["nested"]["value"] = 2
 
 
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda value: value.__setitem__("new", 2),
+        lambda value: value.__delitem__("value"),
+        lambda value: value.__ior__({"new": 2}),
+        lambda value: value.clear(),
+        lambda value: value.pop("value"),
+        lambda value: value.popitem(),
+        lambda value: value.setdefault("new", 2),
+        lambda value: value.update({"new": 2}),
+    ],
+)
+def test_frozen_dict_rejects_every_in_place_mapping_mutator(operation) -> None:
+    """All dict mutation spellings preserve Core snapshots as immutable values."""
+    value = freeze_mapping({"value": 1})
+
+    with pytest.raises(TypeError, match="immutable"):
+        operation(value)
+    assert value == {"value": 1}
+
+
+def test_frozen_dict_copies_remain_immutable_and_detached() -> None:
+    """Snapshot copies retain the immutability invariant Pydantic relies on."""
+    value = freeze_mapping({"nested": {"value": 1}})
+
+    shallow = copy(value)
+    recursive = deepcopy(value)
+
+    assert isinstance(shallow, FrozenDict)
+    assert isinstance(recursive, FrozenDict)
+    assert shallow == recursive == value
+    with pytest.raises(TypeError, match="immutable"):
+        recursive["nested"]["value"] = 2
+
+
+def test_freezing_allows_shared_children_without_retaining_caller_ownership() -> None:
+    """Repeated references are copied safely; only references on the active path are cycles."""
+    child = {"value": 1}
+    frozen = freeze_value({"first": child, "second": child})
+
+    child["value"] = 2
+    assert frozen == {"first": {"value": 1}, "second": {"value": 1}}
+    with pytest.raises(TypeError, match="immutable"):
+        frozen["first"]["value"] = 3
+
+
 def test_structured_models_enforce_recursive_work_budget(monkeypatch) -> None:
     import orbit._immutability as immutability
 
     monkeypatch.setattr(immutability, "_MAX_FREEZE_ITEMS", 3)
     with pytest.raises(ValueError, match="items"):
         Event(name="orders.created", payload={}, metadata={"items": [1, 2]})
+
+
+def test_mapping_boundaries_enforce_limits_during_materialization() -> None:
+    """Misreported mapping lengths cannot bypass incremental structured-value limits."""
+    with pytest.raises(ValueError, match="2 entries"):
+        validate_mapping(_MisreportingMapping(3), name="test mapping", max_entries=2)
 
 
 @pytest.mark.parametrize(
@@ -165,6 +263,20 @@ def test_health_report_keeps_aware_timestamp() -> None:
         HealthReport(details={b"unsafe": True})  # type: ignore[dict-item]
 
 
+class _BrokenTimezone(tzinfo):
+    """Timezone used to prove malformed offsets fail as Core validation errors."""
+
+    def utcoffset(self, dt: datetime | None) -> timedelta:
+        del dt
+        raise RuntimeError("synthetic timezone failure")
+
+
+def test_health_report_rejects_broken_timezone_without_leaking_datetime_error() -> None:
+    """Health reports convert broken custom timezone offsets into bounded validation errors."""
+    with pytest.raises(ValueError, match="timestamps"):
+        HealthReport(checked_at=datetime(2026, 1, 1, tzinfo=_BrokenTimezone()))
+
+
 def test_runtime_models_reject_coerced_operational_values() -> None:
     with pytest.raises(ValueError):
         ApplicationState(application_id=new_application_id(), service_count=True)
@@ -190,6 +302,26 @@ def test_operator_snapshots_reject_unsafe_component_names() -> None:
         ApplicationSummary(
             state=ApplicationState(application_id=new_application_id()),
             service_names=("service\nname",),
+        )
+
+
+def test_operator_snapshot_collections_reuse_core_capacity(monkeypatch) -> None:
+    """Detached application and state summaries cannot bypass registry capacity policy."""
+    import orbit.application.models as application_models
+    import orbit.state.models as state_models
+
+    monkeypatch.setattr(application_models, "_MAX_CORE_CAPACITY", 1)
+    with pytest.raises(ValueError, match="service summaries"):
+        ApplicationSummary(
+            state=ApplicationState(application_id=new_application_id()),
+            service_names=("orders", "users"),
+        )
+
+    monkeypatch.setattr(state_models, "_MAX_CORE_CAPACITY", 1)
+    with pytest.raises(ValueError, match="component snapshots"):
+        ApplicationState(
+            application_id=new_application_id(),
+            services=(ComponentState(name="orders"), ComponentState(name="users")),
         )
 
 
@@ -222,6 +354,71 @@ def test_composition_snapshots_detach_configuration_and_validate_provider_text()
             scope=Scope.SINGLETON,
             dependencies=(),
             resource=False,
+        )
+
+
+def test_inspection_collections_reuse_core_capacity(monkeypatch) -> None:
+    """Composition and provider inspection models enforce their collection limits directly."""
+    import orbit.diagnostics.inspection as inspection
+
+    monkeypatch.setattr(inspection, "_MAX_RELATION_ENTRIES", 1)
+    with pytest.raises(ValueError, match="inspection dependencies"):
+        ProviderDescription(
+            id=new_provider_id(),
+            key="service",
+            scope=Scope.SINGLETON,
+            dependencies=("a", "b"),
+            resource=False,
+        )
+
+    monkeypatch.setattr(inspection, "_MAX_CORE_CAPACITY", 1)
+    with pytest.raises(ValueError, match="Composition snapshot collections"):
+        CompositionSnapshot(
+            services=(ServiceDescriptor(name="orders"), ServiceDescriptor(name="users")),
+            plugins=(),
+            routes=(),
+            dependencies=(),
+            configuration_id=new_configuration_id(),
+            configuration={},
+        )
+
+
+def test_diagnostic_snapshot_collections_are_bounded(monkeypatch) -> None:
+    """Direct diagnostics snapshots cannot retain unbounded history or bucket metadata."""
+    import orbit.diagnostics.models as diagnostic_models
+
+    application = ApplicationSummary(
+        state=ApplicationState(application_id=new_application_id()),
+        service_names=(),
+    )
+    monkeypatch.setattr(diagnostic_models, "_MAX_RELATION_ENTRIES", 1)
+    with pytest.raises(ValueError, match="latency buckets"):
+        DiagnosticSnapshot(
+            application=application,
+            latency_buckets=(
+                LatencyBucket(upper_bound=1.0, count=0),
+                LatencyBucket(upper_bound=2.0, count=0),
+            ),
+        )
+
+    monkeypatch.setattr(diagnostic_models, "_MAX_CORE_CAPACITY", 1)
+    records = (
+        RequestRecord(request_id=new_request_id(), method="GET", status=200, duration_seconds=0.1),
+        RequestRecord(request_id=new_request_id(), method="GET", status=200, duration_seconds=0.2),
+    )
+    with pytest.raises(ValueError, match="request history"):
+        DiagnosticSnapshot(
+            application=application,
+            request_count=2,
+            recent_requests=records,
+            status_counts={200: 2},
+        )
+
+    with pytest.raises(ValueError, match="500"):
+        DiagnosticSnapshot(
+            application=application,
+            request_count=501,
+            status_counts=_MisreportingStatusCounts(),  # type: ignore[arg-type]
         )
 
 

@@ -14,6 +14,7 @@
 """Wire-level failure and disconnect regressions using explicit ASGI frames."""
 
 import asyncio
+from collections.abc import Iterator, Mapping
 from contextlib import asynccontextmanager
 from itertools import product
 
@@ -23,6 +24,26 @@ from orbit import Application, ApplicationConfig
 from orbit.asgi import ASGIApplication, Response
 from orbit.asgi.request import Headers, HTTPError, Request
 from orbit.container import Scope
+from orbit.types import new_request_id
+
+
+class _MisreportingPathParameters(Mapping[str, str]):
+    """Path-parameter mapping whose false length must not disable route bounds."""
+
+    def __init__(self, count: int) -> None:
+        self._count = count
+
+    def __getitem__(self, key: str) -> str:
+        index = int(key.removeprefix("param_"))
+        if 0 <= index < self._count:
+            return "value"
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(f"param_{index}" for index in range(self._count))
+
+    def __len__(self) -> int:
+        return 0
 
 
 async def call(asgi, frames, *, scope=None, send=None):
@@ -60,6 +81,32 @@ async def test_disconnect_prevents_handler_execution():
             ],
         )
     assert not messages and not calls
+
+
+async def test_request_client_identity_is_resolved_once(monkeypatch) -> None:
+    """Request parsing makes one consistent proxy-identity decision per request."""
+    application = Application(ApplicationConfig(name="single-client-resolution"))
+    asgi = ASGIApplication(application)
+    calls = 0
+    original = ASGIApplication._client
+
+    def wrapped(_self, scope, headers):
+        nonlocal calls
+        calls += 1
+        return original(_self, scope, headers)
+
+    monkeypatch.setattr(ASGIApplication, "_client", wrapped)
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    request = await asgi._read_request(
+        {"type": "http", "method": "GET", "path": "/", "headers": []},
+        receive,
+        new_request_id(),
+    )
+    assert calls == 1
+    assert request.client_host is None
 
 
 async def test_slow_client_receive_is_bounded_by_request_deadline() -> None:
@@ -367,6 +414,18 @@ async def test_websocket_upgrade_is_rejected_by_the_http_core() -> None:
     assert messages == [{"type": "websocket.close", "code": 1003}]
 
 
+async def test_unsupported_scope_type_error_is_bounded() -> None:
+    """Unsupported host scope types cannot inject unbounded data into runtime errors."""
+    app = Application(ApplicationConfig(name="unsupported-scope"))
+    with pytest.raises(RuntimeError, match="Unsupported ASGI scope type") as error:
+        await ASGIApplication(app)(
+            {"type": "unsupported-" + "x" * 1_000_000},
+            lambda: None,
+            lambda message: None,
+        )
+    assert len(str(error.value)) < 100
+
+
 async def test_response_boundary_honors_case_insensitive_head_semantics() -> None:
     """Overload and draining paths cannot emit a body for a lowercase HEAD method."""
     messages = []
@@ -623,6 +682,17 @@ def test_response_header_budget_is_bounded():
         Response(headers={"x-test": "bad\x7fvalue"})
 
 
+def test_response_header_budget_includes_runtime_content_length() -> None:
+    """The generated framing header must fit inside the final response budget."""
+    with pytest.raises(ValueError, match="safety limit"):
+        Response(headers=[("x-header", "v")] * Response.MAX_HEADER_COUNT)
+
+    header_name = "x-large"
+    value_size = Response.MAX_HEADER_BYTES - len(header_name) - 2
+    with pytest.raises(ValueError, match="safety limit"):
+        Response(headers={header_name: "x" * value_size})
+
+
 def test_response_rejects_invalid_status_and_body_framing() -> None:
     with pytest.raises(ValueError, match="final"):
         Response(status=200.0)  # type: ignore[arg-type]
@@ -728,6 +798,9 @@ def test_direct_request_bounds_path_parameter_cardinality() -> None:
     parameters = {f"param_{index}": "value" for index in range(129)}
     with pytest.raises(ValueError, match="safety limit"):
         Request("GET", "/", path_parameters=parameters)
+
+    with pytest.raises(ValueError, match="safety limit"):
+        Request("GET", "/", path_parameters=_MisreportingPathParameters(129))
 
 
 @pytest.mark.parametrize(
@@ -1070,6 +1143,9 @@ def test_response_cookie_enforces_secure_samesite_and_lifetime() -> None:
         {"httponly": "true"},
         {"path": 1},
         {"expires": "bad\r\nvalue"},
+        {"expires": "Wed, 09 Jun 2021 10:18:14 GMT; Secure"},
+        {"path": "/; Secure"},
+        {"domain": "example.com; Secure"},
     ],
 )
 def test_response_cookie_rejects_malformed_attribute_types(kwargs: dict[str, object]) -> None:

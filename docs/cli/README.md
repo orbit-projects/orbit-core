@@ -38,8 +38,12 @@ ordinary exception messages from imported application modules are not echoed to 
 
 `orbit serve` accepts `--server uvicorn|gunicorn`, `--workers`, `--host`, `--port`, and `--reload`.
 Reload is valid only with Uvicorn. Gunicorn requires a `Runtime` target and uses the
-`uvicorn-worker` ASGI worker. Use the host's own options for proxy, TLS and process settings;
+`uvicorn-worker` ASGI worker. Orbit checks the selected host modules before starting a process and
+reports the `orbit-core[server]` installation requirement when they are unavailable. Use the
+host's own options for proxy, TLS and process settings;
 Orbit's application limits remain in `ApplicationConfig`.
+For Gunicorn, the command replaces the CLI process with the Gunicorn master so container and
+service-manager signals address the production process directly.
 
 `orbit run` and `orbit start` use the same hosting validation and options as `serve`; they are
 provided for operational scripts that distinguish launching from serving.
@@ -47,6 +51,14 @@ provided for operational scripts that distinguish launching from serving.
 Use the authenticated admin API to inspect live worker state. A local `orbit health` command
 does not prove that a separately deployed process is healthy. Install the `server` extra
 for either hosting mode.
+
+Core intentionally does not provide an `orbit admin` network command yet. The remote
+`AdminClient` is a transport-neutral contract; a concrete HTTP transport belongs to the
+separately installable HTTP-client capability rather than being forced into the Core runtime.
+Response mappings are validated and detached while copying, so a custom transport cannot bypass
+Core's bounded response-body contract by reporting an inaccurate length. This keeps the Core CLI
+honest: its inspection commands operate on the explicitly loaded local application, while remote
+administration remains authenticated and provider-specific.
 
 `orbit health-watch TARGET --interval 5 --iterations 10` emits one JSON health report per check
 and then exits. Finite watches accept at most 1,000,000 iterations; omit `--iterations` to
@@ -62,4 +74,5 @@ Examples:
 uv run --no-sync orbit check examples.minimal.app:application
 uv run --no-sync orbit dependencies examples.minimal.app:application
 uv run --no-sync orbit health examples.minimal.app:application
+uv run --no-sync orbit serve examples.minimal.app:runtime --server uvicorn
 ```

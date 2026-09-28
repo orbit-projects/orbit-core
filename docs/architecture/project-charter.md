@@ -137,7 +137,8 @@ not turn Core or an individual plugin into a deployment security certification.
 
 Orbit is intended to be a reusable open-source project, not a reference architecture or a private
 application template. The repository therefore maintains a license, contribution process, code of
-conduct, security policy, maintainer responsibilities, public roadmap, ADRs, and release evidence.
+conduct, security policy, [governance policy](../../GOVERNANCE.md), maintainer responsibilities,
+public roadmap, ADRs, and release evidence.
 Community plugins and contributors should be able to understand what belongs in Core, what belongs
 in an adapter, how a change is reviewed, and which guarantees are actually tested.
 

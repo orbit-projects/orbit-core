@@ -24,7 +24,13 @@ keeps the publication successful when that callback succeeds. Delivery history c
 event identity and failure counts, never payloads. Handler and dead-letter callbacks share the
 bus timeout, and cancellation remains immediate. A callback that suppresses cancellation is
 detached at the deadline and tracked per subscription; later publications fail closed for that
-subscription until the callback exits, preventing orphan-task accumulation.
+subscription until the callback exits, preventing orphan-task accumulation. Concurrent
+publications also serialize delivery for each subscription, so a callback cannot be started a
+second time while an earlier invocation is still being cancelled; independent subscriptions
+remain eligible for the configured bus-wide concurrency budget. A handler may publish
+re-entrantly to its own subscription; that nested call uses the current execution context rather
+than waiting on its own non-reentrant serialization lock or acquiring the same concurrency
+permit twice.
 
 When an event has a `delivery_key`, the bus retains a bounded `(event name, key)` index and
 acknowledges replayed publications without invoking subscribers again. The bounded index follows

@@ -19,10 +19,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 from orbit._limits import is_finite_number
+from orbit.security.roles import validate_role_collection
 from orbit.security.tokens import Token
 
 _MAX_JWT_ALGORITHMS = 16
 _MAX_JWT_AUDIENCES = 1_024
+_MAX_JWT_SCOPES = 1_024
 
 
 class PyJWTVerifier:
@@ -122,13 +124,15 @@ class PyJWTVerifier:
             if not isinstance(subject, str) or not isinstance(token_id, str):
                 raise ValueError("JWT subject and ID must be strings.")
             raw_scopes = claims.get("scope", claims.get("scp", ()))
-            scopes = (
-                frozenset(raw_scopes.split())
-                if isinstance(raw_scopes, str)
-                else frozenset(raw_scopes)
-            )
-            if any(not isinstance(scope, str) or not scope for scope in scopes):
-                raise ValueError("JWT scopes must be nonempty strings.")
+            if isinstance(raw_scopes, str):
+                scope_values = raw_scopes.split()
+                if len(scope_values) > _MAX_JWT_SCOPES:
+                    raise ValueError("JWT scopes exceed the configured cardinality limit.")
+                scopes = validate_role_collection(tuple(scope_values))
+            elif isinstance(raw_scopes, (list, tuple, set, frozenset)):
+                scopes = validate_role_collection(raw_scopes)
+            else:
+                raise ValueError("JWT scopes must be a string or collection of strings.")
             token_type = claims.get("typ", "access")
             if not isinstance(token_type, str):
                 raise ValueError("JWT type must be a string.")

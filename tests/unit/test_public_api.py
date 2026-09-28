@@ -13,7 +13,246 @@
 # limitations under the License.
 """Regression checks for documented focused-package imports and composition limits."""
 
+from importlib import import_module
+
 import pytest
+
+_PUBLIC_PACKAGES = (
+    "orbit",
+    "orbit.admin",
+    "orbit.asgi",
+    "orbit.application",
+    "orbit.cli",
+    "orbit.config",
+    "orbit.container",
+    "orbit.diagnostics",
+    "orbit.errors",
+    "orbit.events",
+    "orbit.health",
+    "orbit.lifecycle",
+    "orbit.plugins",
+    "orbit.reliability",
+    "orbit.routing",
+    "orbit.runtime",
+    "orbit.security",
+    "orbit.services",
+    "orbit.state",
+    "orbit.testing",
+    "orbit.types",
+)
+_EXPECTED_PUBLIC_EXPORTS = {
+    "orbit": {
+        "Application",
+        "ApplicationBuilder",
+        "ApplicationConfig",
+        "Service",
+        "ServiceDescriptor",
+        "__version__",
+    },
+    "orbit.admin": {
+        "AdminApplication",
+        "AdminClient",
+        "AdminClientError",
+        "AdminContribution",
+        "AdminHTTPResponse",
+        "AdminTransport",
+    },
+    "orbit.asgi": {
+        "ASGIApplication",
+        "CORSMiddleware",
+        "GZipMiddleware",
+        "MAX_BODY_BYTES",
+        "MAX_HEADER_BYTES",
+        "MAX_HEADER_COUNT",
+        "MAX_QUERY_BYTES",
+        "Middleware",
+        "NextHandler",
+        "RateLimitMiddleware",
+        "Request",
+        "Response",
+    },
+    "orbit.application": {"Application", "ApplicationBuilder", "ApplicationSummary"},
+    "orbit.cli": {"app"},
+    "orbit.config": {
+        "ApplicationConfig",
+        "Config",
+        "ConfigChange",
+        "ConfigObserver",
+        "ConfigSnapshot",
+        "ConfigWatcher",
+        "SecretManager",
+        "SecretReference",
+        "SecretValue",
+        "load_application_config",
+        "load_config",
+    },
+    "orbit.container": {
+        "Container",
+        "ContainerContract",
+        "DependencyKey",
+        "Provider",
+        "ProviderObserver",
+        "ProviderResolution",
+        "Scope",
+    },
+    "orbit.diagnostics": {
+        "Counter",
+        "DiagnosticSnapshot",
+        "Diagnostics",
+        "Gauge",
+        "Histogram",
+        "InMemoryTracer",
+        "JSONFormatter",
+        "LatencyBucket",
+        "MetricSnapshot",
+        "MetricsRegistry",
+        "RequestRecord",
+        "Span",
+        "SpanRecord",
+        "TelemetrySink",
+        "Tracer",
+    },
+    "orbit.errors": {
+        "ConfigurationError",
+        "ContainerError",
+        "ErrorCategory",
+        "ErrorResponse",
+        "ErrorSeverity",
+        "LifecycleError",
+        "OrbitError",
+        "OrbitProblem",
+        "PluginError",
+        "RoutingError",
+        "SecurityError",
+        "ValidationError",
+    },
+    "orbit.events": {
+        "Delivery",
+        "Event",
+        "EventBus",
+        "EventFilter",
+        "EventHandler",
+        "EventStore",
+        "EventTransport",
+        "FailurePolicy",
+        "InMemoryEventStore",
+        "StoredEvent",
+        "Subscription",
+    },
+    "orbit.health": {"HealthCheck", "HealthReport", "HealthService", "HealthStatus"},
+    "orbit.lifecycle": {"Lifecycle", "LifecycleObserver", "LifecyclePhase", "LifecycleTransition"},
+    "orbit.plugins": {
+        "CORE_API_VERSION",
+        "Plugin",
+        "PluginContract",
+        "PluginMetadata",
+        "PluginRegistry",
+        "discover_plugins",
+    },
+    "orbit.reliability": {
+        "Bulkhead",
+        "CircuitBreaker",
+        "CircuitOpenError",
+        "CircuitState",
+        "Deadline",
+        "DefaultFailureClassifier",
+        "FailureClassifier",
+        "FailureKind",
+        "RetryPolicy",
+        "resilient_call",
+        "retry",
+    },
+    "orbit.routing": {"Route", "RouteGroup", "RouteMetadata", "Router"},
+    "orbit.runtime": {
+        "HostServer",
+        "HostingConfig",
+        "RestartPolicy",
+        "Runtime",
+        "RuntimeInfo",
+        "TaskFailure",
+        "TaskInfo",
+        "TaskState",
+        "TaskSupervisor",
+    },
+    "orbit.security": {
+        "Authenticator",
+        "BearerAuthenticator",
+        "Identity",
+        "JsonWebKey",
+        "JsonWebKeySet",
+        "JwksProvider",
+        "OIDCDiscoveryDocument",
+        "OIDCDiscoveryProvider",
+        "OAuthAuthorizationRequest",
+        "OAuthProvider",
+        "OAuthTokenResponse",
+        "PolicyEngine",
+        "Principal",
+        "PyJWTVerifier",
+        "RateLimitResult",
+        "RateLimiter",
+        "Token",
+        "TokenRevocationStore",
+        "TokenValidationPolicy",
+        "TokenVerifier",
+        "is_https_url",
+        "require_roles",
+    },
+    "orbit.services": {"Service", "ServiceContract", "ServiceDescriptor", "ServiceRegistry"},
+    "orbit.state": {
+        "ApplicationState",
+        "InMemoryStateCoordinator",
+        "InMemoryStateProvider",
+        "Lease",
+        "NamespaceTransaction",
+        "State",
+        "StateCoordinator",
+        "StateEntry",
+        "StateNamespace",
+        "StateProvider",
+        "StateStore",
+        "StateTransaction",
+    },
+    "orbit.testing": {"TestClient", "TestResponse"},
+    "orbit.types": {
+        "ApplicationId",
+        "ConfigurationId",
+        "EventId",
+        "PluginId",
+        "ProviderId",
+        "RequestId",
+        "RouteId",
+        "ServiceId",
+        "SubscriptionId",
+        "new_application_id",
+        "new_configuration_id",
+        "new_event_id",
+        "new_plugin_id",
+        "new_provider_id",
+        "new_request_id",
+        "new_route_id",
+        "new_service_id",
+        "new_subscription_id",
+    },
+}
+
+
+def test_documented_packages_have_resolvable_public_exports() -> None:
+    """Every documented import boundary exposes a unique, non-private ``__all__``."""
+    for package_name in _PUBLIC_PACKAGES:
+        package = import_module(package_name)
+        exports = getattr(package, "__all__", None)
+        assert isinstance(exports, (list, tuple)), f"{package_name} must define a sequence __all__"
+        assert set(exports) == _EXPECTED_PUBLIC_EXPORTS[package_name], (
+            f"{package_name} public exports changed; update the API contract and documentation"
+        )
+        assert len(exports) == len(set(exports)), f"{package_name} has duplicate exports"
+        assert all(
+            isinstance(name, str) and (not name.startswith("_") or name == "__version__")
+            for name in exports
+        )
+        for name in exports:
+            assert hasattr(package, name), f"{package_name}.{name} is not importable"
 
 
 def test_security_authenticator_is_exported_from_focused_package() -> None:
@@ -21,6 +260,13 @@ def test_security_authenticator_is_exported_from_focused_package() -> None:
     from orbit.security import Authenticator
 
     assert Authenticator.__name__ == "Authenticator"
+
+
+def test_generic_configuration_loader_is_exported_from_focused_package() -> None:
+    """The documented generic configuration entry point has a stable import path."""
+    from orbit.config import load_config
+
+    assert callable(load_config)
 
 
 def test_core_contracts_are_exported_from_focused_packages() -> None:

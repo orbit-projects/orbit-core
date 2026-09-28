@@ -13,12 +13,30 @@
 # limitations under the License.
 """Role and token-scope text boundary tests."""
 
+from collections.abc import Collection, Iterator
+
 import pytest
 
 from orbit import Application, ApplicationConfig
 from orbit.routing import RouteMetadata
 from orbit.security import Identity, Principal, Token
 from orbit.security.roles import validate_role_collection
+
+
+class _MisreportingRoles(Collection[str]):
+    """Collection that reports no entries but yields more roles than the shared limit."""
+
+    def __init__(self, count: int) -> None:
+        self._count = count
+
+    def __contains__(self, value: object) -> bool:
+        return isinstance(value, str) and value.startswith("role-")
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(f"role-{index}" for index in range(self._count))
+
+    def __len__(self) -> int:
+        return 0
 
 
 @pytest.mark.parametrize("value", ["", "reader role", "reader\nrole", "reader\x7frole"])
@@ -79,3 +97,9 @@ def test_role_collection_rejects_unhashable_members_without_leaking_type_errors(
     """Malformed collection members become the shared public type error."""
     with pytest.raises(TypeError, match="collections of strings"):
         validate_role_collection([[]])  # type: ignore[list-item]
+
+
+def test_role_collection_enforces_cardinality_during_materialization() -> None:
+    """A false collection length cannot bypass the shared role and scope bound."""
+    with pytest.raises(ValueError, match="1,024"):
+        validate_role_collection(_MisreportingRoles(1_025))

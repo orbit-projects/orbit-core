@@ -1,0 +1,167 @@
+# Orbit Core release scorecard. Keep this file synchronized with completion.md.
+version = 1
+stable_threshold = 90
+area_order = [
+  "core_contracts",
+  "reliability_operations",
+  "security_supply_chain",
+  "tests_compatibility",
+  "documentation_api",
+  "packaging_release",
+]
+
+[areas.core_contracts]
+label = "Core contracts and scope"
+weight = 25
+earned = 23
+
+[[areas.core_contracts.criteria]]
+points = 8
+status = "earned"
+requirement = "Typed application, service, dependency-injection, configuration, state, event, lifecycle, routing, health, administration, runtime, security, and extension contracts are implemented at Core boundaries."
+evidence = "Public API contract tests, strict mypy, model-boundary validation, and the complete local behavioral suite."
+
+[[areas.core_contracts.criteria]]
+points = 7
+status = "earned"
+requirement = "Core remains provider-neutral: integrations use contracts and no provider SDK, persistence backend, broker, cloud client, or authentication provider is bundled into the framework."
+evidence = "Architecture guides, focused package exports, composition-boundary checks, and dependency inspection."
+
+[[areas.core_contracts.criteria]]
+points = 8
+status = "earned"
+requirement = "Public orchestration contracts define lifecycle, cancellation, cleanup, failure, validation, and ownership behavior and are exercised through supported APIs."
+evidence = "Application, container, event, state, lifecycle, health, ASGI, admin, and task-supervision regression suites."
+
+[[areas.core_contracts.criteria]]
+points = 2
+status = "open"
+requirement = "Approve the first stable public-API baseline: perform the release compatibility review, record accepted exceptions or deprecations, and tag the reviewed API surface."
+evidence = "Requires a reviewed release candidate, maintainer decision, and published version/tag; local tests alone cannot establish the baseline."
+
+[areas.reliability_operations]
+label = "Reliability and operational behavior"
+weight = 20
+earned = 19
+
+[[areas.reliability_operations.criteria]]
+points = 5
+status = "earned"
+requirement = "Lifecycle, resource cleanup, task, configuration-watcher, health-check, and admin-operation cancellation and timeout behavior are bounded."
+evidence = "Focused concurrency, cancellation, cleanup, and failure-injection regression tests."
+
+[[areas.reliability_operations.criteria]]
+points = 5
+status = "earned"
+requirement = "ASGI request, response, framing, disconnect, overload, header, body, path, and query limits fail safely."
+evidence = "ASGI protocol, TestClient contract, HTTP runtime, CORS, compression, and rate-limit tests."
+
+[[areas.reliability_operations.criteria]]
+points = 5
+status = "earned"
+requirement = "Development Uvicorn and production Gunicorn with uvicorn-worker hosting preserve lifespan ownership and graceful worker replacement behavior."
+evidence = "Opt-in real-process hosting tests on Python 3.11 through 3.14."
+
+[[areas.reliability_operations.criteria]]
+points = 4
+status = "earned"
+requirement = "In-process data structures and diagnostic histories have explicit bounded retention and concurrency behavior."
+evidence = "State, event, diagnostics, immutability, and model-boundary regression tests."
+
+[[areas.reliability_operations.criteria]]
+points = 1
+status = "open"
+requirement = "Validate the selected production host and proxy with representative sustained load, slow clients, upstream outages, cancellation, and worker termination."
+evidence = "Requires deployment-specific host, proxy, and provider-adapter evidence; Core's local process tests cannot substitute for it."
+
+[areas.security_supply_chain]
+label = "Security and supply chain"
+weight = 15
+earned = 10
+
+[[areas.security_supply_chain.criteria]]
+points = 5
+status = "earned"
+requirement = "Core validates and redacts security-sensitive structured data, trusted proxy metadata, credentials, authentication contracts, and operator diagnostics."
+evidence = "Security, ASGI, admin, structured-model, and diagnostic regression tests plus security documentation."
+
+[[areas.security_supply_chain.criteria]]
+points = 5
+status = "earned"
+requirement = "Dependency locking, vulnerability auditing, license headers, pinned workflows, secret-scanning configuration, and local release-integrity checks are maintained."
+evidence = "Frozen lock validation, pip-audit, repository checkers, workflow-policy tests, SBOM, checksum, and package checks."
+
+[[areas.security_supply_chain.criteria]]
+points = 5
+status = "open"
+requirement = "Verify current hosted CI, CodeQL, OpenSSF Scorecard, secret scanning, branch protection, and code-owner access on the exact release commit."
+evidence = "Requires successful hosted runs and GitHub repository configuration after the current tree is pushed."
+
+[areas.tests_compatibility]
+label = "Tests and compatibility"
+weight = 20
+earned = 20
+
+[[areas.tests_compatibility.criteria]]
+points = 8
+status = "earned"
+requirement = "The full behavioral suite and strict coverage threshold pass."
+evidence = "1,108 passing local tests, 2 opt-in hosting tests skipped by default, and 91.96% combined coverage on Python 3.11."
+
+[[areas.tests_compatibility.criteria]]
+points = 7
+status = "earned"
+requirement = "Supported Python versions pass the lock-synchronized behavioral suite and real hosting smoke test."
+evidence = "Python 3.11, 3.12, 3.13, and 3.14 validation evidence recorded in completion.md."
+
+[[areas.tests_compatibility.criteria]]
+points = 5
+status = "earned"
+requirement = "Lint, formatting, strict typing, public-export, workflow-policy, model-boundary, documentation, and license validations pass."
+evidence = "Repository-local validation commands and regression tests."
+
+[areas.documentation_api]
+label = "Documentation and API governance"
+weight = 10
+earned = 10
+
+[[areas.documentation_api.criteria]]
+points = 4
+status = "earned"
+requirement = "Public source surfaces have module and public-callable docstrings, purposeful comments, and Apache-2.0 headers."
+evidence = "Documentation and license-header checkers across maintained source."
+
+[[areas.documentation_api.criteria]]
+points = 3
+status = "earned"
+requirement = "Architecture, Core scope, security, operations, deployment, API stability, administration, CLI, and contribution guides state current contracts and boundaries."
+evidence = "Checked Markdown documentation and executable minimal example coverage."
+
+[[areas.documentation_api.criteria]]
+points = 3
+status = "earned"
+requirement = "Open-source governance, maintainer, conduct, contribution, security, roadmap, and ADR policies are present and linked."
+evidence = "Repository governance documents and local-link validation."
+
+[areas.packaging_release]
+label = "Packaging and release operations"
+weight = 10
+earned = 5
+
+[[areas.packaging_release.criteria]]
+points = 5
+status = "earned"
+requirement = "Source and wheel builds, archive contents, typing metadata, license inclusion, dependency SBOM, checksums, and local release-integrity validation pass."
+evidence = "Build, package, SBOM, checksum, and check-release validation on the current worktree."
+
+[[areas.packaging_release.criteria]]
+points = 5
+status = "open"
+requirement = "Run the protected main release workflow and verify uploaded artifacts, Sigstore signing material, GitHub build provenance, release publication, and rollback record."
+evidence = "Requires a current pushed main commit and hosted release workflow execution."
+
+[gates]
+local_core_validation = "pass"
+hosted_ci_security = "open"
+deployment_http_hosting = "open"
+release_artifacts_provenance = "open"

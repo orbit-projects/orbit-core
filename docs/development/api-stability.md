@@ -12,6 +12,10 @@ enums, exception types, identifiers, and documented behavior are public contract
 signatures, validation rules, lifecycle ownership, error categories, redaction guarantees, and
 cancellation behavior are part of compatibility—not merely implementation details.
 
+`tests/unit/test_public_api.py` contains the explicit export manifest for those focused packages.
+A public export addition or removal must update that manifest, the API reference, and the owning
+docstrings in the same change; the test intentionally fails when the live `__all__` drifts.
+
 Underscore-prefixed modules and members, test helpers, in-memory implementation details, and
 unexported names are private. They may change without a compatibility promise. An application or
 plugin must not depend on private names to avoid a missing public contract; missing capability is

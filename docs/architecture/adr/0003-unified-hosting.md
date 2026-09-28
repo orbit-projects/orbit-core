@@ -18,7 +18,9 @@ application boundary passed to either host.
 `orbit serve` selects the host with `--server uvicorn|gunicorn`. Uvicorn supports local reload and
 single-worker execution. Gunicorn requires a `Runtime` target, starts one composed Application in
 each worker through ASGI lifespan, and owns worker signals and replacement. Orbit owns lifecycle,
-readiness, request draining and component/resource cleanup within each worker.
+readiness, request draining and component/resource cleanup within each worker. The CLI replaces
+itself with Gunicorn rather than retaining a supervising parent, so the process manager is the
+service-visible PID and receives termination and reload signals directly.
 
 ## Consequences
 

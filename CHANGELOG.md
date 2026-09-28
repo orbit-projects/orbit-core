@@ -6,6 +6,151 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- JSON-shaped structured Core mappings now validate nested keys as bounded printable text,
+  preventing byte or control-bearing keys from bypassing event, diagnostic, administrative, and
+  JSON serialization boundaries while preserving typed internal mapping keys.
+- Event subscriptions now serialize concurrent publications per handler, preventing a
+  cancellation-resistant callback from being replaced by an overlapping invocation.
+- Health probes now share in-flight provider work per check name, preventing concurrent probes
+  from replacing one another and orphaning a provider task, including the completion window before
+  the original waiter retires the task.
+- Health shutdown now transfers cancellation-resistant active checks into detached ownership,
+  so their late completion is consumed and does not retain an application health reference.
+- Structured task, provider, watcher, health, and administrative diagnostics now replace unsafe
+  application-defined exception class names with a bounded generic type, preventing secondary
+  validation failures while reporting the original fault.
+- Admin audit failures now validate an exception's optional structured problem code before retaining
+  it, so malformed adapter metadata falls back to the same bounded diagnostic identifier.
+- Cancellation of completed async adapters and observers now retires their child tasks and
+  consumes late failures, preventing shutdown-time unhandled-task warnings.
+- Admin extension inspections now retain in-flight ownership per extension, preventing concurrent
+  requests from replacing one inspection task and orphaning its provider work, including the
+  completion window before the original waiter retires the task; application cleanup now transfers
+  active inspections into the same bounded detached-work path.
+- Configuration watcher lifecycle operations are now serialized, preventing concurrent restarts
+  after pre-start cancellation from creating multiple polling tasks under one watcher.
+- In-memory coordination now reclaims expired leases during renew and release as well as acquire,
+  keeping bounded key capacity accurate when no new acquisition occurs.
+- Release validation now checks the generated `SHA256SUMS` manifest and CycloneDX dependency
+  inventory before hosted Sigstore signing, rejecting unsafe paths, duplicate entries, digest
+  mismatches, unlisted direct artifacts, symlinked metadata, and malformed SBOM structure.
+- Configuration loading now validates and detaches caller-owned mappings in one bounded pass,
+  preventing mutable custom inputs from changing between validation and merge.
+- Configuration loading now normalizes invalid detached set members into its structured,
+  redacted configuration error instead of leaking a raw container `TypeError`.
+- Token policy evaluation now bounds and validates verified-token audience claims before trust
+  matching, preventing oversized or control-bearing audience metadata from reaching authorization.
+- Application state transactions now enforce Core's shared capacity limit on distinct staged
+  fields, preventing an unbounded pending mutation batch.
+- The in-process TestClient now applies Core request-header count and byte limits while copying
+  caller input, preventing oversized custom mappings from being materialized before ASGI validation.
+- Response construction now applies header count and byte limits to the final wire set, including
+  the runtime-generated `Content-Length` on buffered responses.
+- The in-process TestClient now applies Core path and query byte limits before URL normalization,
+  keeping its request-construction boundary aligned with direct Core requests.
+- Nested applications now enforce single-parent lifecycle ownership, preventing the same child
+  resources from being configured or stopped by multiple application roots.
+- Configuration watchers now validate their initial file observation for safe operator diagnostics
+  without replacing the already-composed section before a change is detected.
+- Configuration watcher construction now validates its `Config` owner and section identity before
+  a polling task can defer malformed composition to runtime.
+- Namespace state transactions now prepare all detached entries before publishing their revision,
+  preserving atomicity when caller-value copying fails during commit.
+- The CLI now preflights both Gunicorn and `uvicorn_worker` before spawning production hosting,
+  returning the documented server-extra guidance instead of an opaque child-process import error.
+- Release progress now uses a documented weighted evidence scorecard with mandatory hosted and
+  deployment gates, preventing unverified release evidence from being reported as complete.
+- The fixed scorecard is now machine-validated through `scripts/check-scorecard.py`, with regression
+  coverage for its denominator, category weights, earned points, and mandatory gate states.
+- Release workflow policy now requires scorecard validation, CycloneDX SBOM generation, build
+  provenance, OIDC/attestation permissions, and artifact upload alongside signing and checksums.
+- Scorecard validation now checks the published completion and handoff summaries against the
+  canonical TOML evidence, preventing human-readable progress reports from drifting.
+- Unsupported ASGI scope types now produce a constant bounded diagnostic instead of interpolating
+  untrusted host scope text into runtime errors.
+- Cookie attribute values now reject semicolons before `Set-Cookie` rendering, preventing callers
+  from injecting additional cookie attributes through `expires`, `path`, or `domain`.
+- Telemetry sink failures now use a constant diagnostic message instead of recording provider
+  exception text or tracebacks in the host log.
+- CORS policy collections and untrusted preflight header lists are now bounded before matching,
+  preventing excessive configuration or request-header cardinality from creating disproportionate
+  work.
+- GZip negotiation now bounds combined `Accept-Encoding` text and token parsing before deciding
+  whether compression is allowed.
+- CORS now rejects oversized request `Origin` values before policy matching, bounding work on the
+  normal cross-origin request path as well as preflight handling.
+- Structured mappings and direct path-parameter mappings now enforce cardinality while copying,
+  so custom mappings cannot misreport their size and force excess materialization first.
+- Role and scope collections now enforce their shared cardinality bound while copying, including
+  for custom collections with inaccurate reported lengths.
+- Plugin discovery allowlists now enforce their cardinality bound while copying, including for
+  custom collections with inaccurate reported lengths.
+- Health-check registries and health-report detail mappings now detach while validating, preventing
+  inaccurate custom mapping lengths from bypassing their cardinality limits or changing values
+  between validation and execution.
+- Metric labels, histogram buckets, and span attributes now detach while validating, preventing
+  inaccurate custom mapping lengths from bypassing observability cardinality limits.
+- Observability snapshots now reject non-mapping label and bucket inputs with explicit boundary
+  errors instead of relying on incidental Python container behavior.
+- Configuration snapshots and diagnostic status counts now apply their recursive/cardinality
+  budgets while copying, even when caller mappings report inaccurate lengths.
+- JWT verification now validates and bounds scope claims before constructing verified token
+  metadata, covering both space-delimited strings and collection-shaped claims.
+- Administrative HTTP response bodies now pass directly through the bounded mapping validator,
+  preventing custom transport mappings from bypassing response-size limits during copying.
+- Explicit plugin discovery now bounds and validates the allowlist before copying or consulting
+  installed entry points.
+- Public API regression coverage now uses an explicit focused-package export manifest, making
+  accidental additions or removals visible to compatibility review.
+- Hosting validation now accepts Uvicorn's documented host-level connection close as an oversized
+  header rejection when no HTTP response can be produced before the ASGI boundary.
+- The minimal executable example now exports an explicit `Runtime` target, so the documented
+  Uvicorn and Gunicorn hosting commands can launch the maintained example directly.
+- The opt-in direct-Uvicorn process smoke test now exercises a deliberately stalled request body
+  over a real socket and verifies bounded Core timeout behavior at the host boundary.
+- The same real-host smoke test now rejects conflicting `Content-Length` framing over the socket,
+  extending deployment evidence beyond the in-process protocol harness.
+- The real-host development smoke test now forwards one request through an explicit trusted proxy
+  hop and verifies that forwarded identity is accepted only under the configured proxy CIDR.
+- The real Gunicorn process smoke test now terminates one replacement worker deliberately and
+  verifies worker replacement, continued service, and remaining lifecycle cleanup.
+- The direct-Uvicorn process smoke test now runs eight additional concurrent 32-request rounds,
+  adding bounded sustained-load evidence while documenting that long-duration soak remains open.
+- The same process test now includes a bounded two-second request soak; production-duration soak
+  and TLS/HTTP2 proxy validation remain explicitly deployment-level gates.
+- Supported hosting now disables host-level forwarded-identity rewriting so Orbit Core can
+  fail closed on malformed proxy values in both direct Uvicorn and Gunicorn worker processes.
+- The direct hosting smoke test now launches the supported `orbit serve` CLI path and avoids
+  undrained access-log pipes during sustained requests, making process evidence exercise the
+  documented operator surface without test-induced backpressure.
+- The real hosting smoke suite now sends an oversized header through both supported host paths
+  and verifies bounded 400/431 rejection at the socket boundary.
+- The opt-in hosting profile now runs a bounded thirty-second request soak, increasing sustained-load
+  evidence while keeping production-duration and proxy deployment validation explicitly open.
+- Production `orbit serve --server gunicorn` now replaces the CLI process with Gunicorn so the
+  process manager remains the service-visible PID and receives container or supervisor signals.
+- The release workflow now signs the complete distribution, SBOM, and checksum set with
+  Sigstore and retains the signing artifacts alongside GitHub build provenance.
+- CI now retains a coverage XML artifact for each supported Python version, making hosted coverage
+  evidence reviewable while keeping the 90% threshold enforced by the test command.
+- CodeQL and OpenSSF Scorecard jobs now have explicit runner timeouts, bounding stalled hosted
+  security analysis in the same way as the quality and release workflows.
+- The Python compatibility matrix now keeps all interpreter jobs running after an individual
+  failure, so hosted results identify every affected supported version.
+- A workflow policy check now keeps GitHub Actions pinned, hosted jobs time-bounded, coverage
+  artifacts retained, and release checksum generation non-self-referential.
+- Workflow policy validation now requires every SHA-pinned action to retain a human-readable
+  version comment, keeping dependency review meaningful as well as reproducible.
+- Public API regression coverage now verifies every documented Core package has unique, resolvable
+  exports, while explicitly preserving the root package's supported `__version__` export.
+- Trusted proxy configuration now enforces printable per-entry and shared cardinality ceilings and
+  validates only unique CIDRs, bounding forwarded-identity policy before request processing.
+- Detached application, state, composition-inspection, provider-inspection, and diagnostic models
+  now enforce the same Core collection-capacity policy as their owning registries.
+- The workflow policy check now runs through the local pre-commit and Tox lint gates as well as
+  hosted CI and release validation.
+- Release checksum generation now excludes `SHA256SUMS` itself, preventing a self-referential
+  checksum entry from invalidating release verification.
 - Service and provider dependency declarations now allow at most 1,024 edges per component, and
   route middleware stacks have the same bound, preventing one composition object from creating
   disproportionate graph-validation or dispatch work.
@@ -269,6 +414,12 @@ All notable changes to this project are documented in this file.
   `Request` construction, preventing a composed route from failing later during dispatch.
 - Event, lifecycle-transition, and secret-resolution timestamps now require usable timezone offsets;
   event delivery keys also reject control characters before deduplication or adapter handoff.
+- Shared timestamp validation now converts failures from malformed custom timezone offsets into
+  bounded Core validation errors instead of leaking application datetime exceptions.
+- Configuration loaders and watchers now reject overlong or control-bearing environment prefixes
+  before environment composition or file polling begins.
+- The generic typed configuration loader is now exported from `orbit.config`, matching its
+  documented public entry point without requiring callers to import an implementation module.
 - Secret reference and resolved-version metadata now reject control characters before redacted
   configuration or administrative inspection can expose ambiguous text.
 - Event-store replay results now validate positive cursors, concrete event envelopes, and
@@ -541,7 +692,8 @@ All notable changes to this project are documented in this file.
 - Supervised task names now use bounded lowercase identifiers, preventing ambiguous Admin paths and
   health keys during registration and operator restarts.
 - OAuth/OIDC contracts now reject coerced or control-bearing authorization text, constrain PKCE
-  challenges to base64url text, and reject insecure, credential-bearing, or fragment URLs.
+  challenges to base64url text, require an explicit S256 method, and reject insecure,
+  credential-bearing, or fragment URLs.
 - Policy evaluation now validates operation names before they can enter authorization lookups or
   structured security errors.
 - Hosting limits now use strict integer validation, preventing string and float coercion from
@@ -596,6 +748,12 @@ All notable changes to this project are documented in this file.
   keeping their documented JSON-safe immutable boundary true for direct construction as well.
 - Configuration snapshots now reject cyclic, excessively deep, or excessively large JSON-safe
   structures before retaining them in history or exposing them through inspection.
+- Configuration snapshot mappings now reject control-bearing and overlong keys, keeping direct
+  configuration history construction aligned with Core's printable operator-data contract.
+- Configuration loading now bounds recursive input work and rejects cyclic or excessively nested
+  explicit, file, and environment structures before merge and model validation.
+- ASGI request parsing now resolves trusted client identity once per request, keeping host and port
+  consistent while avoiding duplicate proxy-header and network-policy work.
 - CORS policy construction now rejects scalar, non-string and malformed method/header entries, and
   requires a real boolean credential flag before exposing browser-facing policy headers.
 - Rate-limit middleware now validates key providers during composition and preserves falsey callable

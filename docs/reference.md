@@ -19,10 +19,13 @@ Use the focused package exports for the rest of Core:
 | --- | --- | --- |
 | `orbit.application` | Application composition and summaries | `Application`, `ApplicationBuilder` |
 | `orbit.services` | Service contracts and registration | `Service`, `ServiceContract`, `ServiceDescriptor`, `ServiceRegistry` |
-| `orbit.config` | Typed settings, snapshots, secrets, and watchers | `ApplicationConfig`, `Config`, `SecretReference` |
+| `orbit.config` | Typed settings, snapshots, secrets, and watchers | `ApplicationConfig`, `Config`, `load_config`, `SecretReference` |
 | `orbit.container` | Dependency injection and resource ownership | `Container`, `ContainerContract`, `Provider`, `Scope`, `ProviderResolution` |
+| `orbit.errors` | Structured problems and Core exception types | `OrbitProblem`, `ErrorResponse`, `OrbitError`, `ValidationError` |
+| `orbit.cli` | Typer/Rich operator command entry point | `app` |
 | `orbit.lifecycle` | Validated lifecycle phases and transitions | `Lifecycle`, `LifecycleObserver`, `LifecyclePhase` |
 | `orbit.plugins` | Plugin metadata, discovery, and composition | `Plugin`, `PluginContract`, `PluginMetadata`, `PluginRegistry` |
+| `orbit.reliability` | Provider-neutral retry, deadline, circuit, and bulkhead primitives | `Deadline`, `RetryPolicy`, `CircuitBreaker`, `Bulkhead`, `resilient_call` |
 | `orbit.routing` | Framework-neutral route metadata and dispatch | `Router`, `Route`, `RouteMetadata` |
 | `orbit.events` | Typed in-process event delivery and storage contracts | `Event`, `EventBus`, `Delivery`, `Subscription`, `EventStore` |
 | `orbit.state` | Runtime snapshots, namespaces, providers, and leases | `State`, `StateStore`, `StateProvider` |

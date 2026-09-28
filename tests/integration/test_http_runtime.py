@@ -357,6 +357,12 @@ async def test_gzip_combines_repeated_accept_encoding_fields_and_rejects_duplica
     assert "content-encoding" not in duplicate.headers
 
 
+def test_gzip_negotiation_bounds_untrusted_accept_encoding_lists() -> None:
+    tokens = "gzip," + ",".join(f"encoding-{index}" for index in range(1_024))
+    assert not GZipMiddleware._accepts_gzip((tokens,))  # noqa: SLF001 - parser boundary test.
+    assert not GZipMiddleware._accepts_gzip(("gzip," + "x" * (64 * 1024),))  # noqa: SLF001
+
+
 async def test_gzip_preserves_existing_vary_dimensions():
     app, asgi = compose()
     asgi.add_middleware(GZipMiddleware(minimum_size=1))

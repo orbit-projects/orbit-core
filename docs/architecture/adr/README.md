@@ -23,5 +23,6 @@ an ADR explains the decision, while the guide explains how to use it.
 - [Core runtime contracts](0001-core-runtime-contracts.md)
 - [Runtime ownership and concurrency](0002-runtime-ownership.md)
 - [Unified Uvicorn and Gunicorn hosting](0003-unified-hosting.md)
+- [Orbit-owned forwarded identity](0004-orbit-owned-forwarded-identity.md)
 
 ADRs describe the pre-release Core policy and do not certify a provider plugin or a deployment.

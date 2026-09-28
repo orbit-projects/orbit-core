@@ -179,6 +179,14 @@ def test_cors_policy_bounds_methods_and_cache_duration() -> None:
         CORSMiddleware(max_age=float("nan"))
 
 
+def test_cors_policy_collections_and_text_are_bounded() -> None:
+    origins = tuple(f"https://client-{index}.example" for index in range(1_025))
+    with pytest.raises(ValueError, match="entries"):
+        CORSMiddleware(allow_origins=origins)
+    with pytest.raises(ValueError, match="characters"):
+        CORSMiddleware(allow_headers=("x" * 513,))
+
+
 @pytest.mark.parametrize(
     "kwargs, error",
     [
@@ -195,3 +203,61 @@ def test_cors_policy_rejects_malformed_typed_configuration(
 ) -> None:
     with pytest.raises(error):
         CORSMiddleware(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_cors_rejects_oversized_or_malformed_preflight_header_lists() -> None:
+    app = Application(ApplicationConfig(name="cors-preflight-bounds"))
+    asgi = ASGIApplication(app)
+    asgi.add_middleware(
+        CORSMiddleware(
+            allow_origins=("https://trusted.example",),
+            allow_methods=("GET",),
+            allow_headers=("x-request-id",),
+        )
+    )
+
+    @app.router.route("/data", name="data")
+    async def data(request):
+        return Response.text("ok")
+
+    oversized = ",".join(f"x-header-{index}" for index in range(1_025))
+    async with TestClient(asgi) as client:
+        response = await client.request(
+            "OPTIONS",
+            "/data",
+            headers={
+                "origin": "https://trusted.example",
+                "access-control-request-method": "GET",
+                "access-control-request-headers": oversized,
+            },
+        )
+        malformed = await client.request(
+            "OPTIONS",
+            "/data",
+            headers={
+                "origin": "https://trusted.example",
+                "access-control-request-method": "GET",
+                "access-control-request-headers": "x-request-id, bad header",
+            },
+        )
+    assert response.status == 403
+    assert malformed.status == 403
+
+
+@pytest.mark.asyncio
+async def test_cors_ignores_an_oversized_request_origin() -> None:
+    """A large untrusted Origin is rejected before policy matching work begins."""
+    app = Application(ApplicationConfig(name="cors-origin-bound"))
+    asgi = ASGIApplication(app)
+    asgi.add_middleware(CORSMiddleware(allow_origins=("https://trusted.example",)))
+
+    @app.router.route("/data", name="data")
+    async def data(request):
+        return Response.text("ok")
+
+    oversized = "https://" + ("a" * 512)
+    async with TestClient(asgi) as client:
+        response = await client.request("GET", "/data", headers={"origin": oversized})
+    assert response.status == 200
+    assert "access-control-allow-origin" not in response.headers

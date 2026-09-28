@@ -389,6 +389,54 @@ async def test_typed_payload_mismatch_and_handler_deadline():
         await bus.publish(Event(name="slow", payload=None))
 
 
+async def test_concurrent_publications_do_not_overlap_one_subscription_during_cancellation():
+    """A timed-out callback cannot be replaced by a concurrent invocation of itself."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def stubborn(event):
+        nonlocal calls
+        calls += 1
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    bus = EventBus(timeout=0.01, max_concurrency=2)
+    bus.subscribe("serialized", stubborn)
+    first = asyncio.create_task(bus.publish(Event(name="serialized", payload=None)))
+    await started.wait()
+    second = asyncio.create_task(bus.publish(Event(name="serialized", payload=None)))
+
+    results = await asyncio.gather(first, second, return_exceptions=True)
+    assert all(isinstance(result, ExceptionGroup) for result in results)
+    assert calls == 1
+
+    release.set()
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if not bus._detached_callbacks:  # noqa: SLF001 - wait for test-owned callback cleanup.
+            break
+    assert not bus._detached_callbacks  # noqa: SLF001 - verify late callback retirement.
+
+
+async def test_subscription_handler_can_publish_reentrantly():
+    """Per-subscription serialization does not deadlock intentional nested publication."""
+    calls = []
+    bus = EventBus()
+
+    async def handler(event):
+        calls.append(event.payload)
+        if event.payload == 1:
+            await bus.publish(Event(name="reentrant", payload=2))
+
+    bus.subscribe("reentrant", handler)
+    await bus.publish(Event(name="reentrant", payload=1))
+    assert calls == [1, 2]
+
+
 async def test_cancellation_resistant_handler_is_detached_without_blocking_publication():
     started = asyncio.Event()
     release = asyncio.Event()

@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -25,6 +26,29 @@ from orbit.security.tokens import Token
 _MAX_POLICY_TEXT = 255
 _MAX_POLICY_ENTRIES = 1_024
 _MAX_CLOCK_SKEW = timedelta(days=1)
+
+
+def _normalize_audience_claim(value: object) -> frozenset[str]:
+    """Validate and bound a verified token's audience claim before policy matching."""
+    values: Iterable[object]
+    if isinstance(value, str):
+        values = (value,)
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        if len(value) > _MAX_POLICY_ENTRIES:
+            raise ValueError("Token audience claim exceeds the configured cardinality limit.")
+        values = value
+    else:
+        raise ValueError("Token audience claim is invalid.")
+    normalized: set[str] = set()
+    for item in values:
+        if (
+            not isinstance(item, str)
+            or not 1 <= len(item) <= _MAX_POLICY_TEXT
+            or any(ord(character) < 32 or ord(character) == 127 for character in item)
+        ):
+            raise ValueError("Token audience claim contains unsafe text.")
+        normalized.add(item)
+    return frozenset(normalized)
 
 
 class TokenValidationPolicy(BaseModel):
@@ -119,15 +143,7 @@ class TokenValidationPolicy(BaseModel):
         if self.issuer is not None and claims.get("iss") != self.issuer:
             raise ValueError("Token issuer is not trusted.")
         if self.audience:
-            token_audience = claims.get("aud", ())
-            if isinstance(token_audience, str):
-                actual = frozenset({token_audience})
-            elif isinstance(token_audience, (list, tuple, set, frozenset)) and all(
-                isinstance(value, str) for value in token_audience
-            ):
-                actual = frozenset(token_audience)
-            else:
-                raise ValueError("Token audience claim is invalid.")
+            actual = _normalize_audience_claim(claims.get("aud", ()))
             if not self.audience.intersection(actual):
                 raise ValueError("Token audience is not trusted.")
         if not self.required_scopes.issubset(token.scopes):

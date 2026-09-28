@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import gzip
 import re
+from collections.abc import Sequence
 
 from orbit.asgi.middleware import NextHandler
 from orbit.asgi.request import Headers, Request
 from orbit.asgi.response import Response
 
 _QVALUE_PATTERN = re.compile(r"(?:0(?:\.[0-9]{1,3})?|1(?:\.0{1,3})?)\Z")
+_MAX_ACCEPT_ENCODING_BYTES = 64 * 1024
+_MAX_ACCEPT_ENCODING_TOKENS = 1_024
 
 
 class GZipMiddleware:
@@ -94,35 +97,47 @@ class GZipMiddleware:
             return False
         if not isinstance(request.headers, Headers):
             raise TypeError("Compression middleware requires Core Headers for negotiation.")
-        return self._accepts_gzip(", ".join(request.headers.getall("accept-encoding")))
+        return self._accepts_gzip(request.headers.getall("accept-encoding"))
 
     @staticmethod
-    def _accepts_gzip(value: str) -> bool:
+    def _accepts_gzip(values: Sequence[str]) -> bool:
+        """Return whether bounded, duplicate-free negotiation explicitly permits gzip."""
+        if len(values) > _MAX_ACCEPT_ENCODING_TOKENS:
+            return False
+        total_bytes = 0
         explicit: float | None = None
         wildcard: float | None = None
         seen: set[str] = set()
-        for token in value.split(","):
-            encoding, _, parameters = token.strip().lower().partition(";")
-            if encoding not in {"gzip", "*"}:
-                continue
-            if encoding in seen:
+        token_count = 0
+        for value in values:
+            total_bytes += len(value)
+            if total_bytes > _MAX_ACCEPT_ENCODING_BYTES:
                 return False
-            seen.add(encoding)
-            quality = 1.0
-            quality_seen = False
-            for parameter in parameters.split(";"):
-                key, separator, raw = parameter.strip().partition("=")
-                if key.lower() == "q" and separator:
-                    if quality_seen:
-                        return False
-                    quality_seen = True
-                    if _QVALUE_PATTERN.fullmatch(raw) is None:
-                        return False
-                    quality = float(raw)
-            if encoding == "gzip":
-                explicit = quality
-            else:
-                wildcard = quality
+            for token in value.split(","):
+                token_count += 1
+                if token_count > _MAX_ACCEPT_ENCODING_TOKENS:
+                    return False
+                encoding, _, parameters = token.strip().lower().partition(";")
+                if encoding not in {"gzip", "*"}:
+                    continue
+                if encoding in seen:
+                    return False
+                seen.add(encoding)
+                quality = 1.0
+                quality_seen = False
+                for parameter in parameters.split(";"):
+                    key, separator, raw = parameter.strip().partition("=")
+                    if key.lower() == "q" and separator:
+                        if quality_seen:
+                            return False
+                        quality_seen = True
+                        if _QVALUE_PATTERN.fullmatch(raw) is None:
+                            return False
+                        quality = float(raw)
+                if encoding == "gzip":
+                    explicit = quality
+                else:
+                    wildcard = quality
         return (explicit if explicit is not None else wildcard or 0) > 0
 
 

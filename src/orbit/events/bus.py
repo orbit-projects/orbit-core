@@ -21,6 +21,7 @@ import logging
 import re
 from collections import deque
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, TypeVar
@@ -36,6 +37,9 @@ _LOG = logging.getLogger(__name__)
 _EVENT_NAME_PATTERN = re.compile(r"[a-z][a-z0-9.-]{0,126}")
 DeadLetter = Callable[[Event[Any], Exception], Awaitable[None] | None]
 EventFilter = Callable[[Event[Any]], bool]
+_current_subscription: ContextVar[SubscriptionId | None] = ContextVar(
+    "orbit_current_subscription", default=None
+)
 
 
 def _validate_event_name(name: str) -> None:
@@ -156,6 +160,10 @@ class EventBus:
                 SubscriptionId,
             ],
         ] = {}
+        # One lock per subscription prevents concurrent publications from starting a second
+        # callback while the first callback is still being detached after a deadline. The
+        # delivery semaphore remains the bus-wide limit; this lock only serializes one handler.
+        self._subscription_locks: dict[SubscriptionId, asyncio.Lock] = {}
         self._history: deque[Delivery] = deque(maxlen=history_size)
         self._timeout = timeout
         self._max_concurrency = max_concurrency
@@ -259,6 +267,7 @@ class EventBus:
             predicate,
             handle.id,
         )
+        self._subscription_locks[handle.id] = asyncio.Lock()
         return handle
 
     def unsubscribe(self, subscription: Subscription) -> bool:
@@ -267,6 +276,8 @@ class EventBus:
             raise TypeError("subscription must be a Subscription instance.")
         removed = self._subscribers.pop(subscription.id, None) is not None
         self._cancel_subscription_callbacks(subscription.id)
+        if self._active_publishes == 0:
+            self._cleanup_subscription_locks()
         return removed
 
     async def publish(self, event: Event[Any]) -> None:
@@ -283,8 +294,10 @@ class EventBus:
         finally:
             async with self._state_lock:
                 self._active_publishes -= 1
-                if self._active_publishes == 0 and not self._detached_callbacks:
-                    self._publish_done.set()
+                if self._active_publishes == 0:
+                    self._cleanup_subscription_locks()
+                    if not self._detached_callbacks:
+                        self._publish_done.set()
 
     async def _publish(self, event: Event[Any]) -> None:
         """Deliver detached event copies and aggregate failures after all subscribers run."""
@@ -363,9 +376,21 @@ class EventBus:
             return None
 
         async def bounded(item: tuple[Any, ...]) -> Exception | None:
-            """Deliver one subscriber while respecting the bus-wide concurrency limit."""
-            async with self._delivery_semaphore:
+            """Deliver one subscriber under both per-handler and bus-wide limits."""
+            subscription_id = item[-1]
+            lock = self._subscription_locks[subscription_id]
+            if _current_subscription.get() == subscription_id:
+                # A handler may intentionally publish another event to itself. The nested
+                # publication is already within this subscription's execution context, so
+                # waiting for the non-reentrant lock or acquiring the same semaphore twice
+                # would deadlock the handler.
                 return await deliver(item)
+            token = _current_subscription.set(subscription_id)
+            try:
+                async with lock, self._delivery_semaphore:
+                    return await deliver(item)
+            finally:
+                _current_subscription.reset(token)
 
         outcomes = await asyncio.gather(*(bounded(item) for item in subscribers))
         failures = [outcome for outcome in outcomes if outcome is not None]
@@ -381,6 +406,12 @@ class EventBus:
                 self._delivery_key_set.discard(self._delivery_keys.popleft())
             self._delivery_keys.append(key)
             self._delivery_key_set.add(key)
+
+    def _cleanup_subscription_locks(self) -> None:
+        """Release lock objects for registrations removed after all snapshots have drained."""
+        for subscription_id, lock in tuple(self._subscription_locks.items()):
+            if subscription_id not in self._subscribers and not lock.locked():
+                self._subscription_locks.pop(subscription_id, None)
 
     def _ensure_callback_available(self, key: tuple[str, SubscriptionId]) -> None:
         """Reject a callback invocation while an earlier timed-out call is still cancelling."""
@@ -461,6 +492,8 @@ class EventBus:
         self._closed = True
         self._closing = True
         self._subscribers.clear()
+        if self._active_publishes == 0:
+            self._cleanup_subscription_locks()
         self._cancel_detached_callbacks()
 
     async def aclose(self) -> None:

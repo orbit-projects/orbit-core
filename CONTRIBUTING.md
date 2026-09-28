@@ -39,6 +39,8 @@ Run the complete local gate before submitting a pull request:
 uv run --no-sync ruff check src tests scripts examples
 uv run --no-sync ruff format --check src tests scripts examples
 uv run --no-sync mypy src/orbit
+uv run --no-sync python scripts/check-workflows.py
+uv run --no-sync python scripts/check-scorecard.py
 uv run --no-sync python scripts/check-model-boundaries.py
 uv run --no-sync pytest --cov=orbit
 uv run --no-sync python scripts/check-documentation.py
@@ -47,6 +49,11 @@ uv run --no-sync python -m build --no-isolation
 uv run --no-sync python scripts/check-package.py dist
 uv run --no-sync pip-audit --skip-editable --progress-spinner off
 ```
+
+`check-scorecard.py` keeps the published stable-release assessment tied to explicit, reviewable
+evidence. It is a validation check, not a substitute for the hosted release gates. For a release
+candidate, also follow the artifact-integrity procedure in the
+[development guide](docs/development/README.md#local-release-candidate-integrity).
 
 The same documentation, license, model-boundary, and formatting checks are available through the
 repository's local pre-commit hooks.
