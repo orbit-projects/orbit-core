@@ -15,8 +15,9 @@
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 
+from orbit._limits import _MAX_CORE_CAPACITY
 from orbit.state import ApplicationState
 
 
@@ -27,6 +28,14 @@ class ApplicationSummary(BaseModel):
 
     state: ApplicationState
     service_names: tuple[Annotated[StrictStr, Field(pattern=r"^[a-z][a-z0-9-]{0,62}$")], ...]
+
+    @field_validator("service_names")
+    @classmethod
+    def validate_service_names(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        """Keep an operator summary within the same bound as the service registry."""
+        if len(values) > _MAX_CORE_CAPACITY:
+            raise ValueError("Application service summaries exceed Core's capacity limit.")
+        return values
 
 
 __all__ = ["ApplicationSummary"]

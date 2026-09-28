@@ -85,8 +85,10 @@ class Application:
             observer=self._record_task_failure,
         )
         self._admin_contributions: dict[str, AdminContribution] = {}
+        self._running_admin_inspections: dict[str, asyncio.Task[BaseModel]] = {}
         self._detached_admin_inspections: dict[str, asyncio.Task[BaseModel]] = {}
         self._children: dict[str, Application] = {}
+        self._parent: Application | None = None
         self._config_watchers: list[ConfigWatcher[Any]] = []
         self._store = StateStore(ApplicationState(application_id=config.id))
         self.state = State(self._store)
@@ -172,6 +174,8 @@ class Application:
             raise TypeError("Child application names must be strings.")
         if not isinstance(child, Application):
             raise TypeError("Child applications must be Application instances.")
+        if child._parent is not None:  # noqa: SLF001 - ownership is an application invariant.
+            raise ValueError("Child application is already owned by another parent.")
         if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", name):
             raise ValueError("Invalid child application name.")
         if name in self._children or child is self:
@@ -197,6 +201,9 @@ class Application:
         if len(self._children) >= _MAX_CORE_CAPACITY:
             raise RuntimeError("Child application capacity reached.")
         self._children[name] = child
+        # Record ownership only after every registration check succeeds, so a rejected
+        # composition attempt cannot strand the child under a partially mutated parent.
+        child._parent = self  # noqa: SLF001 - both sides are the same Core owner model.
 
     def register_config_watcher(self, watcher: ConfigWatcher[Any]) -> None:
         """Register a configuration watcher owned by this application's lifecycle."""
@@ -283,36 +290,61 @@ class Application:
                 self._retire_admin_inspection(name, existing)
             else:
                 return None
+        running = self._running_admin_inspections.get(name)
+        if running is not None:
+            if running.done():
+                # The inspection may complete between concurrent callers. Reuse its completed
+                # result instead of starting duplicate provider work before the original waiter
+                # retires the task.
+                return self._completed_admin_inspection(name, running)
+            else:
+                return None
         result = contribution.inspect()
         if not inspect.isawaitable(result):
             raise TypeError("Admin contribution inspect methods must return an awaitable.")
         task = asyncio.ensure_future(result)
+        self._running_admin_inspections[name] = task
         try:
             done, _ = await asyncio.wait({task}, timeout=timeout)
             if not done:
                 self._detach_admin_inspection(name, task)
                 return None
-            self._detached_admin_inspections.pop(name, None)
-            view = task.result()
-            if not isinstance(view, BaseModel):
-                raise TypeError("Admin contributions must return Pydantic models.")
-            return view
+            return self._completed_admin_inspection(name, task)
         except asyncio.CancelledError:
-            if not task.done():
+            if task.done():
+                self._retire_admin_inspection(name, task)
+            else:
                 self._detach_admin_inspection(name, task)
             raise
         except BaseException:
             self._detached_admin_inspections.pop(name, None)
             raise
 
+    def _completed_admin_inspection(self, name: str, task: asyncio.Task[BaseModel]) -> BaseModel:
+        """Return one completed inspection and retire its ownership without duplication."""
+        try:
+            view = task.result()
+        except BaseException:
+            self._retire_admin_inspection(name, task)
+            raise
+        self._retire_admin_inspection(name, task)
+        if not isinstance(view, BaseModel):
+            raise TypeError("Admin contributions must return Pydantic models.")
+        return view
+
     def _detach_admin_inspection(self, name: str, task: asyncio.Task[BaseModel]) -> None:
         """Retain one late admin result so repeated requests cannot create orphan inspections."""
+        if self._detached_admin_inspections.get(name) is task:
+            task.cancel()
+            return
         self._detached_admin_inspections[name] = task
         task.cancel()
         task.add_done_callback(lambda finished: self._retire_admin_inspection(name, finished))
 
     def _retire_admin_inspection(self, name: str, task: asyncio.Task[BaseModel]) -> None:
         """Forget a detached inspection and consume its late result or exception."""
+        if self._running_admin_inspections.get(name) is task:
+            del self._running_admin_inspections[name]
         if self._detached_admin_inspections.get(name) is task:
             del self._detached_admin_inspections[name]
         try:
@@ -322,6 +354,13 @@ class Application:
 
     def _cancel_pending_admin_inspections(self) -> None:
         """Request cancellation of extension inspections that outlived an admin deadline."""
+        for name, task in tuple(self._running_admin_inspections.items()):
+            if not task.done():
+                # Shutdown takes ownership from any active waiter so completed work can retire
+                # even when the waiter itself is cancelled with the application.
+                self._detach_admin_inspection(name, task)
+            else:
+                self._retire_admin_inspection(name, task)
         for task in tuple(self._detached_admin_inspections.values()):
             if not task.done():
                 task.cancel()

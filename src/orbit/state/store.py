@@ -19,6 +19,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from threading import RLock
 
+from orbit._limits import _MAX_CORE_CAPACITY
 from orbit.state.models import ApplicationState
 
 
@@ -88,6 +89,9 @@ class StateTransaction:
             raise RuntimeError("State transaction is closed.")
         if "application_id" in changes or "revision" in changes:
             raise ValueError("Identity and revision are managed by StateStore.")
+        new_fields = changes.keys() - self._changes.keys()
+        if len(self._changes) + len(new_fields) > _MAX_CORE_CAPACITY:
+            raise RuntimeError("State transaction change capacity reached.")
         self._changes.update(changes)
         return self
 

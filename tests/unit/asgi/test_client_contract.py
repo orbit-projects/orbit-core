@@ -19,7 +19,13 @@ import pytest
 
 from orbit import Application, ApplicationConfig
 from orbit.asgi import ASGIApplication, Response
-from orbit.asgi.request import Headers
+from orbit.asgi.request import (
+    MAX_HEADER_BYTES,
+    MAX_HEADER_COUNT,
+    MAX_PATH_BYTES,
+    MAX_QUERY_BYTES,
+    Headers,
+)
 from orbit.testing import TestClient
 from orbit.testing import TestResponse as CapturedResponse
 
@@ -254,6 +260,28 @@ async def test_client_rejects_non_latin1_headers_explicitly():
     async with TestClient(ASGIApplication(app)) as client:
         with pytest.raises(ValueError, match="Latin-1"):
             await client.request("GET", "/", headers={"x-test": "€"})
+
+
+async def test_client_bounds_headers_before_building_the_asgi_scope() -> None:
+    """The harness applies Core header limits before copying caller-owned input."""
+    app = Application(ApplicationConfig(name="client-header-limits"))
+    async with TestClient(ASGIApplication(app)) as client:
+        with pytest.raises(ValueError, match="safety limit"):
+            await client.request(
+                "GET", "/", headers=[(f"x-{index}", "v") for index in range(MAX_HEADER_COUNT + 1)]
+            )
+        with pytest.raises(ValueError, match="safety limit"):
+            await client.request("GET", "/", headers={"x-large": "x" * MAX_HEADER_BYTES})
+
+
+async def test_client_bounds_url_components_before_building_the_asgi_scope() -> None:
+    """The harness applies Core path and query byte limits before URL normalization."""
+    app = Application(ApplicationConfig(name="client-url-limits"))
+    async with TestClient(ASGIApplication(app)) as client:
+        with pytest.raises(ValueError, match="path"):
+            await client.request("GET", "/" + "a" * MAX_PATH_BYTES)
+        with pytest.raises(ValueError, match="query string"):
+            await client.request("GET", "/?q=" + "a" * MAX_QUERY_BYTES)
 
 
 async def test_client_preserves_populated_falsey_header_sequences() -> None:

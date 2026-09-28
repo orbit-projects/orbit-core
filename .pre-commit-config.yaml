@@ -25,6 +25,11 @@ repos:
         entry: python scripts/check-documentation.py
         language: system
         pass_filenames: false
+      - id: workflow-policy
+        name: workflow policy
+        entry: python scripts/check-workflows.py
+        language: system
+        pass_filenames: false
       - id: ruff
         name: ruff
         entry: ruff check

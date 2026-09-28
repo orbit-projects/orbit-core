@@ -13,10 +13,27 @@
 
 import asyncio
 import threading
+from collections.abc import Iterator, Mapping
 
 import pytest
 
 from orbit.admin import AdminClient, AdminClientError, AdminHTTPResponse
+
+
+class _MisreportingResponseBody(Mapping[str, object]):
+    """Response mapping that reports no entries but yields beyond the body limit."""
+
+    def __getitem__(self, key: str) -> object:
+        index = int(key.removeprefix("field_"))
+        if 0 <= index < 2_049:
+            return True
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(f"field_{index}" for index in range(2_049))
+
+    def __len__(self) -> int:
+        return 0
 
 
 class FakeTransport:
@@ -140,6 +157,8 @@ def test_admin_http_response_rejects_unbounded_or_unsafe_body_keys() -> None:
         AdminHTTPResponse(status=200, body={str(index): index for index in range(2_049)})
     with pytest.raises(ValueError):
         AdminHTTPResponse(status=200, body={1: "coerced-key"})  # type: ignore[dict-item]
+    with pytest.raises(ValueError, match="2,048"):
+        AdminHTTPResponse(status=200, body=_MisreportingResponseBody())  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -209,6 +228,35 @@ async def test_admin_client_detaches_stubborn_async_operations_per_path() -> Non
             break
     assert not client._detached_async  # noqa: SLF001 - verify late operation retirement.
     assert await client.inspect("health") == {"calls": 2}
+
+
+@pytest.mark.asyncio
+async def test_admin_client_retires_completed_failure_when_waiter_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation after adapter completion must consume the completed failure."""
+    import orbit.admin.client as client_module
+
+    original_wait = asyncio.wait
+
+    async def wait_then_cancel(tasks, *, timeout):
+        done, pending = await original_wait(tasks, timeout=timeout)
+        current = asyncio.current_task()
+        assert current is not None
+        current.cancel()
+        await asyncio.sleep(0)
+        return done, pending
+
+    monkeypatch.setattr(client_module.asyncio, "wait", wait_then_cancel)
+
+    class FailingTransport:
+        async def request(self, method, path, *, headers, body=None):
+            raise RuntimeError("private transport failure")
+
+    client = AdminClient(FailingTransport(), token="token")
+    with pytest.raises(asyncio.CancelledError):
+        await client.inspect("health")
+    assert not client._detached_async  # noqa: SLF001 - verify completed failure retirement.
 
 
 @pytest.mark.asyncio

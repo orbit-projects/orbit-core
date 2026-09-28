@@ -23,7 +23,7 @@ maintainer role and documented in the incident or release record.
 | Require deployments | Disabled until a real deployment environment exists | Do not configure a check that has no reproducible environment. |
 | Require code scanning | Enable after hosted CodeQL results are verified | CodeQL must have results for both the commit and target branch. |
 | Require code quality | Enable when a hosted quality provider is configured | Keep severity thresholds explicit and reviewable. |
-| Restrict code coverage | Enable after coverage upload is configured | The repository's local coverage threshold is 90%; the ruleset needs uploaded PR data. |
+| Restrict code coverage | Enable after a hosted coverage status provider is configured | Each CI matrix job now retains `coverage.xml`; the repository's 90% threshold is still enforced locally by pytest, while a ruleset coverage gate needs a provider that reports PR status data. |
 | Merge queue | Optional after contributor volume justifies it | Add only when the queue is actively maintained and required checks are stable. |
 
 Do not select a status check by memory. Open a successful pull request after CI is installed and
@@ -32,8 +32,11 @@ select the exact check names GitHub reports. At minimum, the matrix should cover
 have produced reliable pull-request results; scheduled-only evidence is not enough for a merge
 gate.
 
-As of 2026-09-27, the public repository has an active `main-protection` ruleset, but its required
-status-check list is empty. After the current Core changes are pushed, a maintainer must open a
+As of 2026-09-28, the public repository reports an active `main-protection` ruleset targeting the
+default branch. It requires one approving review, code-owner review, linear history, CodeQL
+scanning, code-quality errors, and 80% coverage, but its `required_status_checks` list is empty.
+The public `main` commit `aaf49f27ad34eed130ebdcf13e5bec624fecfb5d` has successful CI, CodeQL, and
+OpenSSF Scorecard runs. After the current Core changes are pushed, a maintainer must open a
 successful pull request and add the exact matrix check names reported by GitHub (currently expected
 to be `quality (3.11)`, `quality (3.12)`, `quality (3.13)`, and `quality (3.14)`). This is a
 repository-settings action, not something the local workflow files can enforce by themselves.
@@ -49,6 +52,7 @@ The pull-request quality workflow is expected to run:
 - license-header checks;
 - package build and distribution-integrity validation;
 - dependency vulnerability auditing.
+- per-interpreter coverage artifacts for review and later hosted coverage-gate integration.
 - explicit lockfile synchronization validation before the quality matrix runs.
 
 Security workflows add CodeQL and OpenSSF Scorecard; Scorecard runs on pull requests, pushes to

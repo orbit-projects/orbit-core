@@ -21,9 +21,17 @@ from orbit.asgi.middleware import NextHandler
 from orbit.asgi.request import Headers, Request
 from orbit.asgi.response import Response
 
+_MAX_CORS_ENTRIES = 1_024
+_MAX_CORS_TEXT = 512
+
 
 class CORSMiddleware:
-    """Apply an explicit origin policy and validate CORS preflight requests."""
+    """Apply an explicit, bounded origin policy and validate CORS preflight requests.
+
+    Policy collections and request-supplied origin/preflight values are bounded before they are
+    used for matching or response construction. This keeps an operator configuration or
+    untrusted header from turning a simple origin check into disproportionate memory or CPU work.
+    """
 
     def __init__(
         self,
@@ -104,16 +112,23 @@ class CORSMiddleware:
 
     @staticmethod
     def _strings(values: Iterable[str], label: str) -> tuple[str, ...]:
-        """Materialize a string iterable and reject scalar or non-text policy values."""
+        """Materialize a bounded string iterable and reject scalar or non-text values."""
         if isinstance(values, (str, bytes)):
             raise TypeError(f"CORS {label} must be an iterable of strings, not a scalar.")
         try:
-            items = tuple(values)
+            iterator = iter(values)
         except TypeError as exc:
             raise TypeError(f"CORS {label} must be an iterable of strings.") from exc
-        if any(not isinstance(item, str) for item in items):
-            raise TypeError(f"CORS {label} must contain only strings.")
-        return items
+        items: list[str] = []
+        for item in iterator:
+            if len(items) >= _MAX_CORS_ENTRIES:
+                raise ValueError(f"CORS {label} cannot exceed {_MAX_CORS_ENTRIES:,} entries.")
+            if not isinstance(item, str):
+                raise TypeError(f"CORS {label} must contain only strings.")
+            if len(item) > _MAX_CORS_TEXT:
+                raise ValueError(f"CORS {label} entries cannot exceed {_MAX_CORS_TEXT} characters.")
+            items.append(item)
+        return tuple(items)
 
     @classmethod
     def _header_names(cls, values: Iterable[str], label: str) -> tuple[str, ...]:
@@ -131,6 +146,8 @@ class CORSMiddleware:
     @staticmethod
     def _validate_origin(origin: str) -> None:
         """Reject ambiguous origins so policy entries cannot match unexpectedly."""
+        if len(origin) > _MAX_CORS_TEXT:
+            raise ValueError("CORS origins must be bounded text.")
         try:
             parsed = urlsplit(origin)
             hostname = parsed.hostname
@@ -174,16 +191,15 @@ class CORSMiddleware:
             requested_header_values = headers.getall("access-control-request-headers")
             if len(requested_methods) != 1 or len(requested_header_values) > 1:
                 return Response.json({"code": "security.cors-preflight"}, status=403)
-            requested_method = requested_methods[0].upper()
-            requested_headers = tuple(
-                item.strip().lower()
-                for item in (requested_header_values[0] if requested_header_values else "").split(
-                    ","
-                )
-                if item.strip()
-            )
-            if requested_method not in self.allow_methods or not set(requested_headers).issubset(
-                self.allow_headers
+            requested_method = requested_methods[0]
+            requested_header_text = requested_header_values[0] if requested_header_values else ""
+            requested_headers = self._parse_requested_headers(requested_header_text)
+            if (
+                len(requested_method) > _MAX_CORS_TEXT
+                or not self._is_token(requested_method)
+                or requested_method.upper() not in self.allow_methods
+                or requested_headers is None
+                or not set(requested_headers).issubset(self.allow_headers)
             ):
                 return Response.json({"code": "security.cors-preflight"}, status=403)
             response = Response(status=204)
@@ -194,11 +210,32 @@ class CORSMiddleware:
         return self._headers(response, allowed_origin)
 
     def _allowed_origin(self, origin: str) -> str | None:
+        # Origin is request-controlled; reject oversized values before scanning or matching it.
+        if len(origin) > _MAX_CORS_TEXT:
+            return None
         if any(ord(character) < 0x20 or ord(character) == 0x7F for character in origin):
             return None
         if origin in self.allow_origins:
             return origin
         return "*" if "*" in self.allow_origins and not self.allow_credentials else None
+
+    @classmethod
+    def _parse_requested_headers(cls, value: str) -> tuple[str, ...] | None:
+        """Parse a preflight header list without allocating an unbounded token collection."""
+        if len(value) > _MAX_CORS_ENTRIES * _MAX_CORS_TEXT:
+            return None
+        if not value.strip():
+            return ()
+        tokens = value.split(",")
+        if len(tokens) > _MAX_CORS_ENTRIES:
+            return None
+        normalized = tuple(token.strip().lower() for token in tokens)
+        if any(
+            not token or len(token) > _MAX_CORS_TEXT or not cls._is_token(token)
+            for token in normalized
+        ):
+            return None
+        return normalized
 
     def _headers(self, response: Response, origin: str, *, preflight: bool = False) -> Response:
         if not isinstance(response.headers, Headers):

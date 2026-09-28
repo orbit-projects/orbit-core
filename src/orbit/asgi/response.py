@@ -74,12 +74,6 @@ class Response:
         headers = self.headers if isinstance(self.headers, Headers) else Headers(self.headers)
         if len(headers.getall("content-type")) > 1:
             raise ValueError("Responses cannot contain duplicate Content-Type headers.")
-        if (
-            len(headers.pairs) > self.MAX_HEADER_COUNT
-            or sum(len(name) + len(value) + 2 for name, value in headers.pairs)
-            > self.MAX_HEADER_BYTES
-        ):
-            raise ValueError("Response headers exceed the configured safety limit.")
         for name, value in headers.pairs:
             if not re.fullmatch(r"[!#$%&'*+.^_`|~0-9a-z-]+", name):
                 raise ValueError("Invalid response header name.")
@@ -92,15 +86,27 @@ class Response:
             if name in {"connection", "transfer-encoding", "keep-alive", "upgrade"}:
                 raise ValueError("Hop-by-hop headers belong to the ASGI server.")
         object.__setattr__(self, "headers", headers)
+        # Validate the final wire set, including the runtime-owned Content-Length.
+        self._wire_header_pairs()
 
-    def wire_headers(self) -> list[tuple[bytes, bytes]]:
-        """Return safe lower-case headers with runtime-controlled content length."""
+    def _wire_header_pairs(self) -> list[tuple[str, str]]:
+        """Return final headers and enforce the response wire-budget boundary."""
         headers = self.headers
         if not isinstance(headers, Headers):
             raise TypeError("Responses must expose validated headers.")
         pairs = [(name, value) for name, value in headers.pairs if name != "content-length"]
         if self.stream is None and self.status not in {204, 304}:
             pairs.append(("content-length", str(len(self.body))))
+        if (
+            len(pairs) > self.MAX_HEADER_COUNT
+            or sum(len(name) + len(value) + 2 for name, value in pairs) > self.MAX_HEADER_BYTES
+        ):
+            raise ValueError("Response headers exceed the configured safety limit.")
+        return pairs
+
+    def wire_headers(self) -> list[tuple[bytes, bytes]]:
+        """Return safe lower-case headers with runtime-controlled content length."""
+        pairs = self._wire_header_pairs()
         return [(name.encode("ascii"), value.encode("latin-1")) for name, value in pairs]
 
     def with_cookie(
@@ -130,9 +136,10 @@ class Response:
         ):
             if attribute is not None and (
                 not isinstance(attribute, str)
+                or ";" in attribute
                 or any(ord(character) < 32 or ord(character) == 127 for character in attribute)
             ):
-                raise ValueError(f"Cookie {attribute_name} must be safe text.")
+                raise ValueError(f"Cookie {attribute_name} must be safe text without semicolons.")
         if not isinstance(secure, bool) or not isinstance(httponly, bool):
             raise TypeError("Cookie secure and httponly flags must be booleans.")
         if any(ord(character) < 32 or ord(character) == 127 for character in value):

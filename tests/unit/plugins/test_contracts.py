@@ -14,6 +14,7 @@
 """Provider-neutral plugin runtime contract suite; no external providers are needed."""
 
 import asyncio
+from collections.abc import Collection, Iterator
 from types import SimpleNamespace
 
 import pytest
@@ -22,6 +23,22 @@ from orbit import Application, ApplicationConfig
 from orbit.errors import PluginError
 from orbit.plugins import CORE_API_VERSION, Plugin, PluginMetadata, PluginRegistry
 from orbit.plugins.loader import discover_plugins
+
+
+class _MisreportingAllowlist(Collection[str]):
+    """Collection that reports no names but yields more than the discovery limit."""
+
+    def __init__(self, count: int) -> None:
+        self._count = count
+
+    def __contains__(self, value: object) -> bool:
+        return isinstance(value, str) and value.startswith("plugin-")
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(f"plugin-{index}" for index in range(self._count))
+
+    def __len__(self) -> int:
+        return 0
 
 
 class Extension(Plugin):
@@ -312,6 +329,10 @@ def test_discovery_validates_allowlist_before_entry_point_access(monkeypatch) ->
         discover_plugins(allow={"Unsafe"})
     with pytest.raises(ValueError, match="duplicate"):
         discover_plugins(allow=["safe", "safe"])
+    with pytest.raises(ValueError, match="1,024"):
+        discover_plugins(allow={f"plugin-{index}" for index in range(1_025)})
+    with pytest.raises(ValueError, match="1,024"):
+        discover_plugins(allow=_MisreportingAllowlist(1_025))
     assert discover_plugins(allow=()) == ()
     assert not called
 

@@ -33,7 +33,7 @@ from enum import StrEnum
 from time import monotonic
 from typing import Any
 
-from orbit._limits import _MAX_CORE_CAPACITY, is_finite_number
+from orbit._limits import _MAX_CORE_CAPACITY, is_finite_number, safe_exception_type_name
 
 _LOG = logging.getLogger(__name__)
 TaskFactory = Callable[[], Awaitable[None]]
@@ -303,6 +303,9 @@ class TaskSupervisor:
                             current.add_done_callback(_consume_task_result)
                             raise
                     except Exception:
+                        # Explicit restart treats any terminal outcome from the old task as
+                        # completed cancellation. The replacement owns the next attempt, and
+                        # the awaited task has already had its exception retrieved.
                         pass
                 finally:
                     self._restarting.discard(name)
@@ -334,7 +337,7 @@ class TaskSupervisor:
                     await self._record_failure(spec, started, "CancelledError")
                 return
             except Exception as exc:
-                await self._record_failure(spec, started, type(exc).__name__)
+                await self._record_failure(spec, started, safe_exception_type_name(exc))
                 if (
                     self._stopping
                     or spec.policy is RestartPolicy.NEVER

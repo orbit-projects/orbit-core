@@ -79,13 +79,22 @@ class ApplicationConfig(BaseModel):
     @field_validator("trusted_proxies")
     @classmethod
     def validate_trusted_proxies(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        """Validate CIDR entries and remove duplicate networks while preserving order."""
+        """Validate bounded CIDR entries and remove duplicates while preserving order."""
+        if len(values) > _MAX_CORE_CAPACITY:
+            raise ValueError("trusted_proxies cannot exceed Core's capacity limit.")
+        if any(
+            not 1 <= len(value) <= 255
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)
+            for value in values
+        ):
+            raise ValueError("trusted_proxies must contain bounded printable CIDR values.")
+        unique_values = tuple(dict.fromkeys(values))
         try:
-            for value in values:
+            for value in unique_values:
                 ip_network(value, strict=False)
         except (TypeError, ValueError) as exc:
             raise ValueError("trusted_proxies must contain valid IP networks.") from exc
-        return tuple(dict.fromkeys(values))
+        return unique_values
 
 
 __all__ = ["ApplicationConfig"]

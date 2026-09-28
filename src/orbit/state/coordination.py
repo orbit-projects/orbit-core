@@ -118,6 +118,9 @@ class InMemoryStateCoordinator:
         self._validate(lease.key, ttl)
         async with self._lock:
             self._ensure_open()
+            # Renewal is also a capacity-maintenance operation. A coordinator that only
+            # renews existing leases must not retain unrelated expired keys indefinitely.
+            self._purge_expired()
             current = self._leases.get(lease.key)
             if current != lease or lease.expired:
                 return None
@@ -131,6 +134,9 @@ class InMemoryStateCoordinator:
             raise TypeError("lease must be a Lease instance.")
         async with self._lock:
             self._ensure_open()
+            # Release can be the only operation after a lease expires; reclaim stale keys here
+            # as well so a subsequent acquire observes accurate capacity.
+            self._purge_expired()
             current = self._leases.get(lease.key)
             if current != lease:
                 return False

@@ -22,8 +22,9 @@ dependencies are omitted. Plugin operation names and capability lookups use the 
 identifier contracts as metadata. Composition inspection reports enabled plugin names.
 
 Entry-point discovery is also explicit and allowlisted. Allowlist names must be bounded lowercase
-identifiers and must be unique; Core validates the list before consulting package metadata. An
-empty allowlist performs no discovery. Allowlisting authorizes execution of installed plugin code;
+identifiers and must be unique; the allowlist is capped at 1,024 names and Core validates it while
+copying, before consulting package metadata, even when a custom collection reports an inaccurate
+length. An empty allowlist performs no discovery. Allowlisting authorizes execution of installed plugin code;
 it is not a sandbox or a substitute for package and deployment trust controls.
 
 Registration validates plugin metadata and callable lifecycle hooks before the plugin enters the

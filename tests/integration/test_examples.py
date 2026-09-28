@@ -15,6 +15,7 @@
 
 from orbit import Application
 from orbit.cli.app import load_target
+from orbit.runtime import Runtime
 
 
 def test_minimal_example_uses_the_public_composition_contract() -> None:
@@ -26,3 +27,11 @@ def test_minimal_example_uses_the_public_composition_contract() -> None:
     assert tuple(descriptor.name for descriptor in application.services.descriptors) == (
         "greeting",
     )
+
+
+def test_minimal_example_exports_the_host_runtime_contract() -> None:
+    """The same provider-neutral example can be launched by Uvicorn or Gunicorn."""
+    runtime = load_target("examples.minimal.app:runtime")
+    assert isinstance(runtime, Runtime)
+    assert runtime.application.config.application.name == "minimal"
+    runtime.application.validate()

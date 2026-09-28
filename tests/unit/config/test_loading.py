@@ -15,6 +15,7 @@
 
 import asyncio
 import os
+from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -36,6 +37,62 @@ class Database(BaseModel):
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     database: Database
+
+
+class _BoundedConfigMapping(Mapping[str, object]):
+    """Mapping that fails if a copier requests entries beyond the configured work budget."""
+
+    def __getitem__(self, key: str) -> object:
+        if key in {"first", "second"}:
+            return True
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        yield "first"
+        yield "second"
+        raise AssertionError("configuration mapping was materialized past its budget")
+
+    def __len__(self) -> int:
+        return 0
+
+
+class _SinglePassConfigMapping(Mapping[str, object]):
+    """Mapping that fails if configuration composition reads caller input twice."""
+
+    def __init__(self) -> None:
+        self.iterations = 0
+
+    def __getitem__(self, key: str) -> object:
+        if key == "name":
+            return "test"
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        self.iterations += 1
+        if self.iterations > 1:
+            raise AssertionError("configuration input was read after detachment")
+        return iter(("name",))
+
+    def __len__(self) -> int:
+        return 1
+
+
+class _HashableConfigMapping(Mapping[str, object]):
+    """Mapping-shaped input that exposes invalid set-member normalization."""
+
+    def __getitem__(self, key: str) -> object:
+        if key == "value":
+            return True
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(("value",))
+
+    def __len__(self) -> int:
+        return 1
+
+    def __hash__(self) -> int:
+        return id(self)
 
 
 def test_nested_configuration_precedence_and_redaction(tmp_path):
@@ -96,6 +153,22 @@ def test_application_header_limit_is_bounded():
         ApplicationConfig(name="test", trusted_proxies=("not-an-network",))
     with pytest.raises(ValidationError, match="trusted_proxies"):
         ApplicationConfig(name="test", trusted_proxies=(None,))  # type: ignore[arg-type]
+    with pytest.raises(ValidationError, match="trusted_proxies"):
+        ApplicationConfig(name="test", trusted_proxies=("127.0.0.1/32\n",))
+    with pytest.raises(ValidationError, match="trusted_proxies"):
+        ApplicationConfig(name="test", trusted_proxies=("x" * 256,))
+
+
+def test_trusted_proxy_capacity_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Proxy trust policy cannot retain an unbounded network allowlist."""
+    import orbit.config.models as config_models
+
+    monkeypatch.setattr(config_models, "_MAX_CORE_CAPACITY", 1)
+    with pytest.raises(ValidationError, match="trusted_proxies"):
+        ApplicationConfig(
+            name="test",
+            trusted_proxies=("127.0.0.1/32", "10.0.0.0/8"),
+        )
 
 
 def test_application_concurrency_limit_is_bounded() -> None:
@@ -243,6 +316,63 @@ def test_configuration_section_capacity_is_bounded(monkeypatch: pytest.MonkeyPat
         config.register("second", Settings(database=Database(host="db-b", password="secret")))
 
 
+@pytest.mark.parametrize("source", ["values", "environment", "file"])
+def test_configuration_loader_bounds_each_input_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, source: str
+) -> None:
+    """Configuration composition bounds explicit, environment, and TOML input work."""
+    monkeypatch.setattr("orbit.config.loader._MAX_INPUT_VALUES", 2)
+    kwargs: dict[str, object]
+    if source == "values":
+        kwargs = {"values": {"name": "test"}}
+    elif source == "environment":
+        kwargs = {"environment": {"ORBIT_NAME": "test"}}
+    else:
+        file = tmp_path / "config.toml"
+        file.write_text('name = "test"\n')
+        kwargs = {"file": file}
+    with pytest.raises(ConfigurationError):
+        load_config(ApplicationConfig, **kwargs)
+
+
+def test_configuration_loader_detaches_custom_mapping_before_composition() -> None:
+    """A caller mapping is validated and consumed exactly once at the loader boundary."""
+    values = _SinglePassConfigMapping()
+
+    config = load_config(ApplicationConfig, values=values)
+
+    assert config.name == "test"
+    assert values.iterations == 1
+
+
+def test_configuration_loader_normalizes_invalid_set_members() -> None:
+    """Invalid detached set members become the loader's redacted configuration error."""
+
+    class SetSettings(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        values: frozenset[object]
+
+    with pytest.raises(ConfigurationError) as caught:
+        load_config(SetSettings, values={"values": {_HashableConfigMapping()}})
+
+    assert caught.value.problem.code == "configuration.invalid"
+    assert "value" not in caught.value.problem.model_dump_json()
+
+
+def test_configuration_loader_rejects_cyclic_input() -> None:
+    """Configuration composition fails safely on cyclic caller-owned mappings."""
+    values: dict[str, object] = {}
+    values["self"] = values
+    with pytest.raises(ConfigurationError):
+        load_config(ApplicationConfig, values=values)
+
+    nested: object = "leaf"
+    for _ in range(64):
+        nested = {"value": nested}
+    with pytest.raises(ConfigurationError):
+        load_config(ApplicationConfig, values={"name": "test", "nested": nested})
+
+
 def test_configuration_registration_rejects_untyped_sections():
     with pytest.raises(TypeError, match="ApplicationConfig"):
         Config(object())  # type: ignore[arg-type]
@@ -272,6 +402,10 @@ def test_configuration_history_records_validate_identity_and_mapping_keys() -> N
         ConfigChange("database", 0, {}, {})
     with pytest.raises(ValueError, match="keys"):
         ConfigSnapshot(1, {1: "not a JSON key"})  # type: ignore[dict-item]
+    with pytest.raises(ValueError, match="bounded printable"):
+        ConfigSnapshot(1, {"unsafe\nkey": "not a safe JSON key"})
+    with pytest.raises(ValueError, match="bounded printable"):
+        ConfigSnapshot(1, {"x" * 256: "not a bounded JSON key"})
     with pytest.raises(TypeError, match="JSON-safe"):
         ConfigSnapshot(1, {"value": object()})
     with pytest.raises(TypeError, match="JSON-safe"):
@@ -289,6 +423,17 @@ def test_configuration_snapshots_reject_cycles_and_excessive_nesting() -> None:
         nested = [nested]
     with pytest.raises(ValueError, match="nested"):
         ConfigSnapshot(1, {"nested": nested})
+
+
+def test_configuration_snapshot_enforces_work_budget_during_mapping_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A custom mapping cannot force full materialization before configuration bounds apply."""
+    import orbit.config.config as config_module
+
+    monkeypatch.setattr(config_module, "_MAX_CONFIG_VALUES", 2)
+    with pytest.raises(ValueError, match="values"):
+        ConfigSnapshot(1, _BoundedConfigMapping())
 
 
 def test_frozen_configuration_sections_reload_atomically_and_notify():
@@ -390,6 +535,21 @@ async def test_configuration_watcher_applies_valid_changes_and_retains_good_stat
     assert config.get("database").database.host == "db-b"
 
 
+async def test_configuration_watcher_validates_initial_file_without_mutating_config(tmp_path):
+    """The first observation reports invalid input while preserving the composed section."""
+    file = tmp_path / "config.toml"
+    file.write_text("[database]\nhost=\n")
+    config = Config(ApplicationConfig(name="test"))
+    config.register("database", Settings(database=Database(host="db-a", password="secret")))
+    config.freeze()
+    watcher = ConfigWatcher(config, "database", Settings, file)
+
+    assert await watcher.run_once() is None
+    assert watcher.last_error is not None
+    assert "ConfigurationError" in str(watcher.last_error)
+    assert config.get("database").database.host == "db-a"
+
+
 async def test_configuration_watcher_detects_in_place_edit_with_same_size_and_mtime(
     tmp_path,
 ) -> None:
@@ -438,6 +598,27 @@ async def test_configuration_watcher_sanitizes_observer_errors(tmp_path):
     assert watcher.last_error is not None
     assert "private-database-password" not in str(watcher.last_error)
     assert "RuntimeError" in str(watcher.last_error)
+
+
+async def test_configuration_watcher_sanitizes_unsafe_exception_type_names(tmp_path):
+    """A provider-created exception name cannot escape the watcher's bounded error contract."""
+    file = tmp_path / "config.toml"
+    file.write_text('[database]\nhost="db-a"\npassword="secret"\n')
+    config = Config(ApplicationConfig(name="test"))
+    config.register("database", Settings(database=Database(host="db-a", password="secret")))
+    config.freeze()
+    unsafe_error = type("private\n" + "x" * 128, (RuntimeError,), {})
+
+    def reject(change):
+        raise unsafe_error("private-database-password")
+
+    config.subscribe(reject)
+    watcher = ConfigWatcher(config, "database", Settings, file)
+    assert await watcher.run_once() is None
+    file.write_text('[database]\nhost="db-b"\npassword="secret"\n')
+    assert await watcher.run_once() is None
+    assert watcher.last_error is not None
+    assert str(watcher.last_error) == "Configuration watcher failed (Exception)."
 
 
 async def test_configuration_watcher_detects_atomic_replacement_with_same_size_and_mtime(
@@ -505,6 +686,27 @@ async def test_configuration_watcher_start_stop_is_idempotence_safe(tmp_path):
     await watcher.stop()
 
 
+async def test_configuration_watcher_serializes_restart_after_prestart_cancellation(tmp_path):
+    """Concurrent restarts cannot replace one watcher task with two polling tasks."""
+    file = tmp_path / "config.toml"
+    file.write_text('[database]\nhost="db-a"\npassword="secret"\n')
+    config = Config(ApplicationConfig(name="test"))
+    config.register("database", Settings(database=Database(host="db-a", password="secret")))
+    config.freeze()
+    watcher = ConfigWatcher(config, "database", Settings, file, interval=0.01)
+
+    await watcher.start()
+    previous = watcher._task  # noqa: SLF001 - force the pre-start cancellation race.
+    assert previous is not None
+    previous.cancel()
+    await asyncio.gather(previous, return_exceptions=True)
+
+    results = await asyncio.gather(watcher.start(), watcher.start(), return_exceptions=True)
+    assert sorted(type(result).__name__ for result in results) == ["NoneType", "RuntimeError"]
+    assert watcher.running
+    await watcher.stop()
+
+
 async def test_configuration_watcher_can_restart_after_unexpected_task_exit(tmp_path):
     file = tmp_path / "config.toml"
     file.write_text('[database]\nhost="db-a"\npassword="secret"\n')
@@ -530,6 +732,16 @@ def test_configuration_watcher_rejects_non_finite_interval(tmp_path):
         ConfigWatcher(config, "database", Settings, file, interval=float("nan"))
     with pytest.raises(ValueError):
         ConfigWatcher(config, "database", Settings, file, interval="1")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="bounded printable"):
+        ConfigWatcher(config, "database", Settings, file, prefix="x" * 256)
+    with pytest.raises(ValueError, match="bounded printable"):
+        ConfigWatcher(config, "database", Settings, file, prefix="APP\n")
+    with pytest.raises(ValueError, match="lowercase identifiers"):
+        ConfigWatcher(config, "Database", Settings, file)
+    with pytest.raises(ValueError, match="lowercase identifiers"):
+        ConfigWatcher(config, "x" * 64, Settings, file)
+    with pytest.raises(TypeError, match="Config owner"):
+        ConfigWatcher(object(), "database", Settings, file)  # type: ignore[arg-type]
     with pytest.raises(TypeError):
         ConfigWatcher(config, "database", object, file)  # type: ignore[arg-type]
     with pytest.raises(TypeError):
@@ -542,6 +754,8 @@ def test_configuration_watcher_rejects_non_finite_interval(tmp_path):
     "kwargs",
     [
         {"prefix": 1},
+        {"prefix": "x" * 256},
+        {"prefix": "APP\n"},
         {"values": []},
         {"environment": {1: "value"}},
         {"environment": {"ORBIT_NAME": 1}},

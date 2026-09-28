@@ -32,7 +32,12 @@ from threading import RLock, Thread
 from time import monotonic
 from typing import Any, TypeVar, cast, overload
 
-from orbit._limits import _MAX_CORE_CAPACITY, _MAX_RELATION_ENTRIES, is_finite_number
+from orbit._limits import (
+    _MAX_CORE_CAPACITY,
+    _MAX_RELATION_ENTRIES,
+    is_finite_number,
+    safe_exception_type_name,
+)
 from orbit.container.dependency import DependencyKey, _validate_dependency_key
 from orbit.container.provider import Provider
 from orbit.container.scope import Scope
@@ -356,7 +361,7 @@ class Container:
                 success = True
                 return instance
             except BaseException as exc:
-                error_type = type(exc).__name__
+                error_type = safe_exception_type_name(exc)
                 raise
             finally:
                 _path.reset(token)
@@ -424,7 +429,7 @@ class Container:
             success = True
             return cast(object, instance)
         except BaseException as exc:
-            error_type = type(exc).__name__
+            error_type = safe_exception_type_name(exc)
             raise
         finally:
             owner._resolving.discard(key)

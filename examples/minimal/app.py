@@ -14,6 +14,7 @@
 """Minimal Orbit application composition."""
 
 from orbit import Application, ApplicationConfig, Service, ServiceDescriptor
+from orbit.runtime import Runtime
 
 
 class GreetingService(Service):
@@ -24,3 +25,5 @@ class GreetingService(Service):
 
 application = Application(ApplicationConfig(name="minimal"))
 application.register(GreetingService())
+# Keep the host-facing object explicit: Gunicorn's Uvicorn worker imports this Runtime target.
+runtime = Runtime(application)

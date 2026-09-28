@@ -226,10 +226,12 @@ class Request:
         )
         if not isinstance(self.path_parameters, Mapping):
             raise TypeError("Request path parameters must be a mapping.")
-        parameters = dict(self.path_parameters)
-        if len(parameters) > MAX_PATH_PARAMETERS:
-            raise ValueError("Request path parameters exceed the safety limit.")
-        for key, value in parameters.items():
+        # Validate while copying: callers can provide custom mappings whose reported length is
+        # inaccurate, so materializing the whole mapping before enforcing the route bound is unsafe.
+        parameters: dict[str, str] = {}
+        for parameter_count, (key, value) in enumerate(self.path_parameters.items(), start=1):
+            if parameter_count > MAX_PATH_PARAMETERS:
+                raise ValueError("Request path parameters exceed the safety limit.")
             if not isinstance(key, str) or not isinstance(value, str):
                 raise TypeError("Request path parameter names and values must be strings.")
             if _PATH_PARAMETER_NAME.fullmatch(key) is None:
@@ -248,6 +250,7 @@ class Request:
                 or any(ord(character) < 32 or ord(character) == 127 for character in value)
             ):
                 raise ValueError("Request path parameter values must be canonical path segments.")
+            parameters[key] = value
         object.__setattr__(self, "path_parameters", MappingProxyType(parameters))
 
     @property

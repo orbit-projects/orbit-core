@@ -28,6 +28,8 @@ jobs:
       - run: uv run --no-sync ruff check src tests scripts examples
       - run: uv run --no-sync ruff format --check src tests scripts examples
       - run: uv run --no-sync mypy src/orbit
+      - run: uv run --no-sync python scripts/check-workflows.py
+      - run: uv run --no-sync python scripts/check-scorecard.py
       - run: uv run --no-sync python scripts/check-model-boundaries.py
       - run: uv run --no-sync pytest --cov=orbit
       - name: Validate managed Gunicorn/Uvicorn workers
@@ -47,6 +49,11 @@ jobs:
             | xargs -0 --no-run-if-empty sha256sum > dist/SHA256SUMS
       - name: Verify release checksums
         run: sha256sum --check dist/SHA256SUMS
+      - run: uv run --no-sync python scripts/check-release.py dist
+      - uses: sigstore/gh-action-sigstore-python@5b79a39c381910c090341a2c9b0bf022c8b387e1 # v3.4.0
+        with:
+          inputs: dist/*
+          upload-signing-artifacts: true
       - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
           subject-path: dist/*

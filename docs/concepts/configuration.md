@@ -9,7 +9,9 @@ admin flags use strict booleans, and application identity/trusted-proxy entries 
 types. Direct model construction therefore cannot silently change an operational policy through
 string or Python `bool`-as-`int` coercion. Defaults are validated as well, so strict field
 constraints apply equally to declared defaults and caller-supplied values; timeout and rate-period
-attributes retain their declared `float` runtime types.
+attributes retain their declared `float` runtime types. Trusted proxy CIDRs are printable, bounded
+to 255 characters per entry, deduplicated, validated, and bounded by Core's shared composition
+capacity before forwarded identity can be used.
 
 The Core `Config` owner has a stable typed `ConfigurationId`. Every `ConfigSnapshot` retains that
 identity while its monotonic version identifies one accepted configuration state. The ID is useful
@@ -20,16 +22,18 @@ The shared composition snapshot exposes the same `ConfigurationId` to the CLI an
 those surfaces do not create separate configuration identities.
 
 Configuration snapshots and change records validate their versions and UUID ownership and reject
-non-string mapping keys instead of silently converting ambiguous keys during freezing. Their
+non-string, control-bearing, or overlong mapping keys instead of silently converting ambiguous
+keys during freezing. Their
 nested values remain detached and immutable after publication; cyclic, excessively deep, or
 excessively large JSON-safe structures are rejected at the snapshot boundary.
 
-Use `load_config(Model, file=..., values=..., environment=...)` for application or extension
-models. Precedence is TOML file < explicit values < prefixed environment variables.
+Use `orbit.config.load_config(Model, file=..., values=..., environment=...)` for application or
+extension models. Precedence is TOML file < explicit values < prefixed environment variables.
 Nested mappings merge; inputs are not modified. Use Pydantic models with `extra="forbid"`
 when unknown settings should be rejected.
-Loader boundaries validate the model class, file path, prefix, mapping types, and string environment
-entries before composition; malformed operator input becomes a redacted `ConfigurationError`
+Loader boundaries validate the model class, file path, prefix, mapping types, string environment
+entries, and bounded recursive input work while detaching each caller-owned mapping in one pass;
+malformed, cyclic, or changing operator input becomes a redacted `ConfigurationError`
 rather than an incidental Python attribute/type error.
 
 Environment names use `ORBIT_` by default, with double underscores for nested fields.
@@ -43,8 +47,8 @@ Files are read with a one MiB limit by default, configurable through `max_file_b
 64 MiB. This upper bound prevents an operator-controlled configuration path from allocating an
 unbounded read buffer.
 File parsing and validation failures become `ConfigurationError` with affected field
-locations, excluding submitted input values. A nonempty prefix and positive size limit
-are required.
+locations, excluding submitted input values. The environment prefix must be a bounded printable
+string of at most 255 characters, and the file-size limit must be positive.
 
 `application.config.register(name, model)` stores a detached extension settings model. Section names
 are bounded lowercase identifiers (`[a-z][a-z0-9_.-]{0,62}`), so they remain safe in inspection,
@@ -68,7 +72,8 @@ rejects booleans, non-integer values, and impractically large retention requests
 allowing Python's implicit numeric coercion or an unbounded deque allocation to alter the policy.
 Snapshot mappings and nested sequences are recursively read-only; use `snapshot.as_dict()` for
 a detached serialization copy. Snapshot values are limited to JSON-safe scalars (`null`, booleans,
-strings, finite numbers), mappings with nonempty string keys, and nested sequences; arbitrary
+strings, finite numbers), mappings with bounded printable string keys of at most 255 characters, and
+nested sequences; arbitrary
 objects and non-finite numbers are rejected even when a snapshot is constructed directly.
 
 For extension settings that support hot updates, `config.reload_section(name, model)` provides
@@ -94,10 +99,12 @@ Changes to `ApplicationConfig` require composing a new application.
 
 `ConfigWatcher` provides an explicit async polling boundary for a TOML extension section. It
 records file metadata plus a bounded content digest, applies only successfully validated and observer-approved
-changes, and retains the previous good section when a file is temporarily invalid or missing.
-Its polling interval is a finite positive number, its file-size limit is a positive integer, and
-the watched file and model class are validated at construction. `stop()` waits for polling
-cleanup and propagates caller cancellation after cleanup completes. `last_error` retains only a
+changes, validates the initial observation without mutating the already-composed section, and
+retains the previous good section when a file is temporarily invalid or missing.
+Its `Config` owner, section identity, polling interval, prefix, file-size limit, watched file, and
+model class are validated at construction. Start and stop operations are serialized for one
+watcher, so a pre-start cancellation or concurrent restart cannot replace one task handle with
+multiple polling tasks. `stop()` waits for polling cleanup and propagates caller cancellation after cleanup completes. `last_error` retains only a
 sanitized exception type summary; file paths, configuration values, and observer messages are not
 exposed through the watcher inspection API.
 

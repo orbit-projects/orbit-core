@@ -300,6 +300,16 @@ def test_nested_application_cycles_are_rejected() -> None:
         child.register_child("parent", parent)
 
 
+def test_nested_application_cannot_have_multiple_lifecycle_owners() -> None:
+    """One child must have one shutdown owner so cleanup order stays deterministic."""
+    first_parent = Application(ApplicationConfig(name="first-parent"))
+    second_parent = Application(ApplicationConfig(name="second-parent"))
+    child = Application(ApplicationConfig(name="owned-child"))
+    first_parent.register_child("child", child)
+    with pytest.raises(ValueError, match="already owned"):
+        second_parent.register_child("child", child)
+
+
 def test_deep_nested_application_cycles_do_not_use_recursive_python_stack() -> None:
     """Cycle validation remains bounded by heap traversal for deeply nested graphs."""
     root = Application(ApplicationConfig(name="deep-root"))
