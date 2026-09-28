@@ -23,6 +23,25 @@ _MAX_FREEZE_DEPTH = 64
 _MAX_FREEZE_ITEMS = 100_000
 
 
+def _validate_structured_key(key: object) -> str:
+    """Return one safe JSON-object key or reject unsafe nested mapping structure.
+
+    Top-level model fields validate their own cardinality limits before calling the freezer, but
+    nested mappings reach diagnostics, events, and JSON serialization through this shared path.
+    Applying the same key-shape rule here prevents a nested byte or control-bearing key from
+    bypassing the public mapping boundary.
+    """
+    if (
+        not isinstance(key, str)
+        or not 1 <= len(key) <= 255
+        or any(ord(character) < 32 or ord(character) == 127 for character in key)
+    ):
+        raise ValueError(
+            "Structured mapping keys must be nonempty strings of at most 255 printable characters."
+        )
+    return key
+
+
 class FrozenDict(dict[str, Any]):
     """A dict-compatible mapping that rejects all in-place mutation.
 
@@ -99,7 +118,13 @@ def freeze_value(value: Any) -> Any:
     becoming an unbounded recursion or a partially mutable retained value.
     """
 
-    return _freeze_value(value, active=set(), item_count=[0], depth=0)
+    return _freeze_value(
+        value,
+        active=set(),
+        item_count=[0],
+        depth=0,
+        validate_mapping_keys=False,
+    )
 
 
 def _freeze_value(
@@ -108,6 +133,7 @@ def _freeze_value(
     active: set[int],
     item_count: list[int],
     depth: int,
+    validate_mapping_keys: bool,
 ) -> Any:
     """Freeze one value while tracking the current container path and total work."""
 
@@ -126,11 +152,14 @@ def _freeze_value(
         if isinstance(value, Mapping):
             return FrozenDict(
                 {
-                    key: _freeze_value(
+                    (
+                        _validate_structured_key(key) if validate_mapping_keys else key
+                    ): _freeze_value(
                         item,
                         active=active,
                         item_count=item_count,
                         depth=depth + 1,
+                        validate_mapping_keys=validate_mapping_keys,
                     )
                     for key, item in value.items()
                 }
@@ -142,6 +171,7 @@ def _freeze_value(
                     active=active,
                     item_count=item_count,
                     depth=depth + 1,
+                    validate_mapping_keys=validate_mapping_keys,
                 )
                 for item in value
             )
@@ -151,6 +181,7 @@ def _freeze_value(
                 active=active,
                 item_count=item_count,
                 depth=depth + 1,
+                validate_mapping_keys=validate_mapping_keys,
             )
             for item in value
         )
@@ -159,9 +190,18 @@ def _freeze_value(
 
 
 def freeze_mapping(value: dict[str, Any]) -> FrozenDict:
-    """Return a recursively protected copy of a string-keyed mapping."""
+    """Return a recursively protected copy of a JSON-shaped string-keyed mapping."""
 
-    return cast(FrozenDict, freeze_value(value))
+    return cast(
+        FrozenDict,
+        _freeze_value(
+            value,
+            active=set(),
+            item_count=[0],
+            depth=0,
+            validate_mapping_keys=True,
+        ),
+    )
 
 
 def validate_mapping(
@@ -180,10 +220,12 @@ def validate_mapping(
     """
     if not isinstance(value, Mapping):
         raise TypeError(f"{name} must be a mapping.")
-    mapping = dict(value)
-    if len(mapping) > max_entries:
-        raise ValueError(f"{name} cannot contain more than {max_entries:,} entries.")
-    for key in mapping:
+    # Walk the source incrementally: a custom Mapping may misreport its length, so copying it
+    # with dict(value) before checking the limit would allow avoidable unbounded materialization.
+    mapping: dict[str, Any] = {}
+    for item_count, (key, item) in enumerate(value.items(), start=1):
+        if item_count > max_entries:
+            raise ValueError(f"{name} cannot contain more than {max_entries:,} entries.")
         if (
             not isinstance(key, str)
             or not 1 <= len(key) <= max_key_length
@@ -193,7 +235,8 @@ def validate_mapping(
                 f"{name} keys must be nonempty strings of at most "
                 f"{max_key_length} printable characters."
             )
-    return cast(dict[str, Any], mapping)
+        mapping[key] = item
+    return mapping
 
 
 __all__ = ["FrozenDict", "freeze_mapping", "freeze_value", "validate_mapping"]

@@ -22,23 +22,31 @@ from orbit.plugins.contracts import PluginContract
 
 ENTRY_POINT_GROUP = "orbit.plugins"
 _ENTRY_POINT_NAME = re.compile(r"[a-z][a-z0-9_.-]{0,126}")
+_MAX_PLUGIN_ALLOWLIST = 1_024
 
 
 def _validate_allowlist(allow: Collection[str]) -> tuple[str, ...]:
-    """Materialize the plugin execution allowlist without implicit string coercion."""
-    if isinstance(allow, (str, bytes)):
+    """Validate a bounded plugin execution allowlist before materializing its names."""
+    if isinstance(allow, (str, bytes)) or not isinstance(allow, Collection):
         raise TypeError("Plugin allowlists must be collections of names, not scalar text.")
-    try:
-        names = tuple(allow)
-    except TypeError as exc:
-        raise TypeError("Plugin allowlists must be collections of names.") from exc
-    if any(not isinstance(name, str) for name in names):
-        raise TypeError("Plugin allowlists must contain only strings.")
-    if any(_ENTRY_POINT_NAME.fullmatch(name) is None for name in names):
-        raise ValueError("Plugin allowlist names must be bounded lowercase identifiers.")
-    if len(names) != len(set(names)):
-        raise ValueError("Plugin allowlists must not contain duplicate names.")
-    return names
+    # Validate incrementally: a custom Collection may misreport its length, so tuple(allow)
+    # must not materialize the complete execution policy before the cardinality bound is checked.
+    names: list[str] = []
+    seen: set[str] = set()
+    for index, name in enumerate(allow, start=1):
+        if index > _MAX_PLUGIN_ALLOWLIST:
+            raise ValueError(
+                f"Plugin allowlists cannot contain more than {_MAX_PLUGIN_ALLOWLIST:,} names."
+            )
+        if not isinstance(name, str):
+            raise TypeError("Plugin allowlists must contain only strings.")
+        if _ENTRY_POINT_NAME.fullmatch(name) is None:
+            raise ValueError("Plugin allowlist names must be bounded lowercase identifiers.")
+        if name in seen:
+            raise ValueError("Plugin allowlists must not contain duplicate names.")
+        seen.add(name)
+        names.append(name)
+    return tuple(names)
 
 
 def discover_plugins(*, allow: Collection[str]) -> tuple[PluginContract, ...]:

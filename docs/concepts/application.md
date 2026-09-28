@@ -27,7 +27,8 @@ initialization, and start as one serialized transaction. If any hook fails, Core
 children, services, plugins, and resources in reverse ownership order. Shutdown attempts every cleanup
 step even when one fails and reports aggregate cleanup errors after the remaining owners have run.
 
-Applications can register child applications. A child is validated for cycles and follows its
+Applications can register child applications. A child is validated for cycles and has exactly one
+parent lifecycle owner, preventing two roots from stopping the same resources. It follows its
 parent through configuration, initialization, and startup. Children stop before the parent releases
 its services and providers. Child names and application instances are validated at registration;
 configuration watchers likewise require callable `start` and `stop` hooks before the application

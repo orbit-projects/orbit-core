@@ -13,8 +13,9 @@
 # limitations under the License.
 """Versioned snapshots of application and component lifecycle state."""
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator
 
+from orbit._limits import _MAX_CORE_CAPACITY
 from orbit.health import HealthStatus
 from orbit.lifecycle import LifecyclePhase
 from orbit.types import ApplicationId
@@ -40,6 +41,14 @@ class ApplicationState(BaseModel):
     revision: StrictInt = Field(default=0, ge=0)
     services: tuple[ComponentState, ...] = ()
     plugins: tuple[ComponentState, ...] = ()
+
+    @field_validator("services", "plugins")
+    @classmethod
+    def validate_components(cls, values: tuple[ComponentState, ...]) -> tuple[ComponentState, ...]:
+        """Keep detached component snapshots aligned with registry capacity limits."""
+        if len(values) > _MAX_CORE_CAPACITY:
+            raise ValueError("Application component snapshots exceed Core's capacity limit.")
+        return values
 
 
 __all__ = ["ApplicationState", "ComponentState"]

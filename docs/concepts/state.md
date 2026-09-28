@@ -1,6 +1,6 @@
 # State
 
-Application state is a frozen Pydantic snapshot shared by runtime, diagnostics, and administrative views. `StateStore.update` validates each replacement and supports optimistic `expected_revision` checks. `StateStore.replace` applies the same check using the supplied snapshot revision, so stale operator or admin snapshots cannot overwrite newer state. For multiple related changes, `with store.transaction() as tx:` stages updates and commits one revision atomically; a stale revision raises and leaves the store unchanged. Transactions can be rolled back by raising from the context block. The store owns identity and revision fields, and every read returns a detached snapshot. Service and plugin component names use the same bounded identifier contract as registration metadata, preventing malformed names from reaching operator snapshots.
+Application state is a frozen Pydantic snapshot shared by runtime, diagnostics, and administrative views. `StateStore.update` validates each replacement and supports optimistic `expected_revision` checks. `StateStore.replace` applies the same check using the supplied snapshot revision, so stale operator or admin snapshots cannot overwrite newer state. For multiple related changes, `with store.transaction() as tx:` stages updates and commits one revision atomically; a stale revision raises and leaves the store unchanged. Transactions can be rolled back by raising from the context block. The store owns identity and revision fields, and every read returns a detached snapshot. Service and plugin component names use the same bounded identifier contract as registration metadata, preventing malformed names from reaching operator snapshots. The state model also bounds its detached service and plugin collections by Core's shared composition capacity, so direct model construction cannot bypass registry limits. Structured mapping cardinality is enforced while copying, so a custom mapping cannot bypass a limit by reporting an inaccurate length.
 
 `StateEntry` is also a validated public snapshot boundary: keys, positive revisions, and finite TTL deadlines are checked, and arbitrary values are detached before an entry is retained. This prevents a caller-owned nested mapping or list from changing an already-published state record.
 
@@ -16,8 +16,10 @@ or lock. Durable or distributed state providers implement these semantics in ada
 `StateNamespace.transaction()` provides optimistic multi-key updates: sets and deletes commit
 under one lock and one namespace revision. A stale base revision or capacity violation aborts
 the entire transaction, including value-detachment failures; staged values support the namespace's
-TTL rules. State revisions advance only after every staged value has been detached successfully,
-and a transaction that only deletes missing keys is a revision-preserving no-op. A transaction
+TTL rules. State revisions advance only after every staged `StateEntry` has been constructed
+successfully, and a failed commit closes the transaction so it cannot be retried against a
+possibly changed snapshot. A transaction that only deletes missing keys is a revision-preserving
+no-op. A transaction
 also applies Core's one-million distinct-change ceiling while staging, so an oversized mutation
 cannot consume unbounded memory before commit-time capacity validation.
 
@@ -33,8 +35,9 @@ successful acquire returns an opaque ownership token and monotonic expiry; lease
 deadline and method inputs are validated before state is inspected, renew requires the exact
 current token, and release cannot be forged. `InMemoryStateCoordinator` provides bounded
 single-process semantics for local development and adapter contract tests; its distinct-key
-cardinality is bounded and expired leases are reclaimed before capacity is evaluated. Distributed adapters
-must preserve these ownership and expiry guarantees across failures.
+cardinality is bounded and expired leases are reclaimed before acquire, renew, or release
+capacity/ownership decisions. Distributed adapters must preserve these ownership and expiry
+guarantees across failures.
 
 `InMemoryStateProvider` implements the async `StateProvider` contract over isolated
 `StateNamespace` instances. It is useful for local operation and adapter contract tests; values

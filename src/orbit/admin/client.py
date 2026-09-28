@@ -52,8 +52,9 @@ class AdminHTTPResponse(BaseModel):
         """Reject non-string JSON keys before Pydantic can coerce remote data."""
         if not isinstance(value, Mapping):
             raise TypeError("Admin response bodies must be mappings.")
-        body = dict(value)
-        return validate_mapping(body, name="Admin response body")
+        # Validate while copying so a custom adapter mapping cannot be fully materialized before
+        # the shared cardinality and key-shape limits are applied.
+        return validate_mapping(value, name="Admin response body")
 
     def model_post_init(self, __context: object) -> None:
         """Protect nested response data while retaining JSON-compatible serialization."""
@@ -318,7 +319,9 @@ class AdminClient:
         try:
             done, _ = await asyncio.wait({task}, timeout=self._timeout)
         except asyncio.CancelledError:
-            if not task.done():
+            if task.done():
+                self._retire_async(operation, task)
+            else:
                 self._detach_async(operation, task)
             raise
         if not done:

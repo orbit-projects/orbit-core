@@ -32,18 +32,21 @@ credential string. Token identifiers, subjects, and policy issuer/audience/scope
 control characters before they can enter audit, logging, or trust decisions.
 Verified claim mappings are bounded by key shape and cardinality, then detached
 and recursively frozen so provider-owned mutable data cannot change an identity
-or token after verification.
+or token after verification. When a policy checks audience, the token's audience claim is also
+bounded to 1,024 entries and printable values of at most 255 characters before matching.
 Token, JWKS, policy, health, and administrative audit timestamps must have a usable UTC offset;
 a custom `tzinfo` object whose `utcoffset()` returns `None` is rejected as ambiguous.
 
 JWKS snapshots cap key count, validate key metadata text, and freeze provider-specific extra
 fields after validation. OAuth token responses and OIDC discovery documents retain forward-
 compatible provider fields but bound their top-level metadata to 128 printable keys and freeze
-them before adapters consume or expose the models; token text is bounded as well.
+them before adapters consume or expose the models. Nested mapping keys use the same bounded,
+printable text rule; token text is bounded as well.
 
-OAuth authorization requests require strict text and PKCE validation, and HTTPS redirect URIs;
-raw whitespace, control characters, and backslashes are rejected before URL parsing to avoid
-parser or browser normalization differences.
+OAuth authorization requests require strict text, an explicit S256 PKCE method whenever a
+challenge is present, and HTTPS redirect URIs; the weaker RFC 7636 ``plain`` default is not
+accepted. Raw whitespace, control characters, and backslashes are rejected before URL parsing to
+avoid parser or browser normalization differences.
 HTTP callbacks are accepted only for `localhost` development targets; URLs containing userinfo or
 fragments, empty ports, or IPv6 zone identifiers are rejected. OIDC discovery endpoints follow the
 same HTTPS/localhost rule. Provider
@@ -59,7 +62,8 @@ security context. Policy evaluators must return an actual boolean; truthy non-bo
 denied. Authorization is evaluated after
 authentication and before handler execution.
 Role and token-scope identifiers are bounded printable text without whitespace or control
-characters before they reach authorization, OpenAPI, audit, or diagnostic output. Every
+characters before they reach authorization, OpenAPI, audit, or diagnostic output. JWT scope
+claims are normalized and bounded before verified token construction. Every
 role/scope collection is capped at 1,024 entries across principals, tokens, routes, OAuth
 requests, and authorization policies, preventing one security surface from accepting an
 unbounded identity payload. Verified token

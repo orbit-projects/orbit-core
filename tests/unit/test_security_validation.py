@@ -62,6 +62,10 @@ def test_validation_policy_checks_issuer_audience_and_scopes() -> None:
         policy.validate(token(iss="https://issuer", aud="web"))
     with pytest.raises(ValueError, match="audience claim"):
         policy.validate(token(iss="https://issuer", aud=object()))
+    with pytest.raises(ValueError, match="cardinality"):
+        policy.validate(token(iss="https://issuer", aud=[f"aud-{index}" for index in range(1_025)]))
+    with pytest.raises(ValueError, match="unsafe text"):
+        policy.validate(token(iss="https://issuer", aud=["api\n"]))
 
 
 def test_jwks_snapshot_expires_and_selects_key() -> None:

@@ -41,15 +41,19 @@ def validate_role_collection(values: Collection[str]) -> frozenset[str]:
     """
     if isinstance(values, (str, bytes)) or not isinstance(values, Collection):
         raise TypeError("Roles and scopes must be collections of strings.")
-    if len(values) > _MAX_ROLE_ENTRIES:
-        raise ValueError(
-            f"Roles and scopes cannot contain more than {_MAX_ROLE_ENTRIES:,} entries."
-        )
-    try:
-        normalized = frozenset(values)
-    except TypeError as exc:
-        raise TypeError("Roles and scopes must be collections of strings.") from exc
-    return frozenset(validate_role_text(value) for value in normalized)
+    # Do not trust a custom Collection's reported length: validate cardinality while copying so
+    # an inaccurate __len__ cannot make Core materialize an oversized identity collection.
+    normalized_values: set[object] = set()
+    for index, value in enumerate(values, start=1):
+        if index > _MAX_ROLE_ENTRIES:
+            raise ValueError(
+                f"Roles and scopes cannot contain more than {_MAX_ROLE_ENTRIES:,} entries."
+            )
+        try:
+            normalized_values.add(value)
+        except TypeError as exc:
+            raise TypeError("Roles and scopes must be collections of strings.") from exc
+    return frozenset(validate_role_text(value) for value in normalized_values)
 
 
 __all__ = ["validate_role_collection", "validate_role_text"]

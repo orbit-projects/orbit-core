@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 """Tests for context-propagated tracing contracts."""
 
+from collections.abc import Iterator, Mapping
+
 import pytest
 
 from orbit.diagnostics import InMemoryTracer, SpanRecord
@@ -22,6 +24,25 @@ from orbit.runtime.context import (
     current_span_id,
     current_trace_id,
 )
+
+
+class _MisreportingAttributes(Mapping[str, object]):
+    """Mapping that reports no entries but yields more than the span attribute limit."""
+
+    def __init__(self, count: int) -> None:
+        self._count = count
+
+    def __getitem__(self, key: str) -> object:
+        index = int(key)
+        if 0 <= index < self._count:
+            return True
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(str(index) for index in range(self._count))
+
+    def __len__(self) -> int:
+        return 0
 
 
 @pytest.mark.asyncio
@@ -119,6 +140,21 @@ def test_span_records_validate_public_snapshot_fields(kwargs: dict[str, object])
     values.update(kwargs)
     with pytest.raises((TypeError, ValueError)):
         SpanRecord(**values)  # type: ignore[arg-type]
+
+
+def test_span_record_enforces_attribute_cardinality_during_copy() -> None:
+    """A false mapping length cannot bypass the public span attribute limit."""
+    with pytest.raises(ValueError, match="cardinality"):
+        SpanRecord(
+            name="request",
+            trace_id="trace",
+            span_id="span",
+            parent_span_id=None,
+            started_at=1.0,
+            duration_seconds=0.1,
+            status="ok",
+            attributes=_MisreportingAttributes(129),  # type: ignore[arg-type]
+        )
 
 
 @pytest.mark.parametrize("history_size", [True, "1"])

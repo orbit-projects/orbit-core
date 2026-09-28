@@ -68,6 +68,7 @@ def test_bounded_history_preserves_cumulative_metrics_and_isolates_sinks(caplog)
     assert snapshot.latency_buckets[1].count == 1
     assert len(captured) == 3
     assert "Telemetry sink failed" in caplog.text
+    assert "backend offline" not in caplog.text
     assert diagnostics.unsubscribe(broken)
     assert not diagnostics.unsubscribe(broken)
 

@@ -73,6 +73,24 @@ def test_provider_resolution_records_validate_diagnostic_boundaries() -> None:
         ProviderResolution("database\tname", Scope.SINGLETON, True, 0.25)
 
 
+def test_provider_resolution_sanitizes_unsafe_exception_type_names() -> None:
+    """A provider failure still produces a valid observer record with hostile class metadata."""
+    unsafe_error = type("private\n" + "x" * 128, (RuntimeError,), {})
+    container = Container()
+    records: list[ProviderResolution] = []
+    container.observe(records.append)
+
+    def fail(_: Container) -> None:
+        raise unsafe_error("private provider detail")
+
+    container.register_factory("provider", fail)
+    with pytest.raises(unsafe_error):
+        container.resolve("provider")
+
+    assert records[-1].success is False
+    assert records[-1].error_type == "Exception"
+
+
 def test_container_reports_circular_dependencies() -> None:
     """Circular factory resolution produces an actionable structured exception."""
     container = Container()

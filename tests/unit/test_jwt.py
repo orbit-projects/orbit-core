@@ -97,6 +97,21 @@ def test_pyjwt_verifier_rejects_malformed_claim_types(
         PyJWTVerifier("secret").verify("compact")
 
 
+def test_pyjwt_verifier_bounds_scope_claims_before_token_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claims = {
+        "sub": "u",
+        "jti": "id",
+        "iat": 1,
+        "exp": 2,
+        "scope": [f"scope-{index}" for index in range(1_025)],
+    }
+    monkeypatch.setitem(sys.modules, "jwt", SimpleNamespace(decode=lambda *args, **kwargs: claims))
+    with pytest.raises(ValueError, match="invalid"):
+        PyJWTVerifier("secret").verify("compact")
+
+
 @pytest.mark.parametrize("claim", ["iat", "exp"])
 def test_pyjwt_verifier_rejects_non_numeric_date_claims(
     monkeypatch: pytest.MonkeyPatch, claim: str

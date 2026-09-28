@@ -30,6 +30,7 @@ from pydantic import (
 )
 
 from orbit._immutability import freeze_value
+from orbit._limits import _MAX_CORE_CAPACITY, _MAX_RELATION_ENTRIES
 from orbit.application.models import ApplicationSummary
 from orbit.types import RequestId
 
@@ -80,16 +81,39 @@ class DiagnosticSnapshot(BaseModel):
     cancelled_count: StrictInt = Field(default=0, ge=0)
     disconnected_count: StrictInt = Field(default=0, ge=0)
 
+    @field_validator("recent_requests")
+    @classmethod
+    def validate_request_history(
+        cls, values: tuple[RequestRecord, ...]
+    ) -> tuple[RequestRecord, ...]:
+        """Keep direct diagnostic snapshots within the configured history capacity."""
+        if len(values) > _MAX_CORE_CAPACITY:
+            raise ValueError("Diagnostic request history exceeds Core's capacity limit.")
+        return values
+
+    @field_validator("latency_buckets")
+    @classmethod
+    def validate_latency_buckets(
+        cls, values: tuple[LatencyBucket, ...]
+    ) -> tuple[LatencyBucket, ...]:
+        """Keep latency bucket metadata bounded independently of request history."""
+        if len(values) > _MAX_RELATION_ENTRIES:
+            raise ValueError(
+                f"Diagnostic latency buckets cannot contain more than "
+                f"{_MAX_RELATION_ENTRIES:,} entries."
+            )
+        return values
+
     @field_validator("status_counts", mode="before")
     @classmethod
     def validate_status_counts(cls, value: object) -> dict[int, int]:
         """Require strict HTTP status/count pairs before Pydantic can coerce them."""
         if not isinstance(value, Mapping):
             raise TypeError("Diagnostic status counts must be a mapping.")
-        if len(value) > 500:
-            raise ValueError("Diagnostic status counts cannot contain more than 500 statuses.")
         normalized: dict[int, int] = {}
-        for status, count in value.items():
+        for index, (status, count) in enumerate(value.items(), start=1):
+            if index > 500:
+                raise ValueError("Diagnostic status counts cannot contain more than 500 statuses.")
             if (
                 isinstance(status, bool)
                 or not isinstance(status, int)

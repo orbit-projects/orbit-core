@@ -88,6 +88,24 @@ async def test_coordinator_renews_and_reclaims_expired_leases() -> None:
 
 
 @pytest.mark.asyncio
+async def test_renew_and_release_reclaim_unrelated_expired_capacity() -> None:
+    """Non-acquire operations also purge expired leases before capacity is observed."""
+    coordinator = InMemoryStateCoordinator(max_keys=1)
+    lease = await coordinator.acquire("first", ttl=0.01)
+    assert lease is not None
+    await asyncio.sleep(0.02)
+
+    assert await coordinator.renew(lease, ttl=1) is None
+    second = await coordinator.acquire("second", ttl=0.01)
+    assert second is not None
+
+    await asyncio.sleep(0.02)
+    assert await coordinator.release(second) is False
+    third = await coordinator.acquire("third", ttl=1)
+    assert third is not None
+
+
+@pytest.mark.asyncio
 async def test_coordinator_rejects_malformed_lease_inputs() -> None:
     coordinator = InMemoryStateCoordinator()
     for malformed in (None, object(), ("job", "token", 1)):

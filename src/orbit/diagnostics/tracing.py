@@ -85,17 +85,21 @@ class SpanRecord:
         object.__setattr__(self, "duration_seconds", float(self.duration_seconds))
         if not isinstance(self.attributes, Mapping):
             raise TypeError("Span attributes must be a mapping.")
-        if len(self.attributes) > _MAX_SPAN_ATTRIBUTES:
-            raise ValueError("Span attributes exceed the configured cardinality limit.")
-        if any(
-            not isinstance(name, str)
-            or not name
-            or len(name) > 255
-            or any(ord(character) < 32 or ord(character) == 127 for character in name)
-            for name in self.attributes
-        ):
-            raise ValueError("Span attribute names must be bounded printable strings.")
-        object.__setattr__(self, "attributes", freeze_mapping(dict(self.attributes)))
+        # Detach while validating: an inaccurate custom mapping length must not allow an
+        # oversized attribute set to be materialized before the cardinality check.
+        attributes: dict[str, Any] = {}
+        for index, (name, value) in enumerate(self.attributes.items(), start=1):
+            if index > _MAX_SPAN_ATTRIBUTES:
+                raise ValueError("Span attributes exceed the configured cardinality limit.")
+            if (
+                not isinstance(name, str)
+                or not name
+                or len(name) > 255
+                or any(ord(character) < 32 or ord(character) == 127 for character in name)
+            ):
+                raise ValueError("Span attribute names must be bounded printable strings.")
+            attributes[name] = value
+        object.__setattr__(self, "attributes", freeze_mapping(attributes))
 
 
 @runtime_checkable

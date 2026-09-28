@@ -51,9 +51,16 @@ class MetricSnapshot:
             raise ValueError("Metric snapshot names must be valid metric identifiers.")
         if not isinstance(self.kind, str) or self.kind not in {"counter", "gauge", "histogram"}:
             raise ValueError("Metric snapshot kind must be counter, gauge, or histogram.")
-        if not isinstance(self.labels, Mapping) or len(self.labels) > _MAX_LABELS:
-            raise ValueError(f"Metric snapshot labels must contain at most {_MAX_LABELS} entries.")
-        for name, value in self.labels.items():
+        if not isinstance(self.labels, Mapping):
+            raise TypeError("Metric snapshot labels must be a mapping.")
+        # Detach while validating: a custom mapping can misreport its length, so dict(self.labels)
+        # must not materialize an oversized label set before the cardinality check.
+        labels: dict[str, str] = {}
+        for index, (name, value) in enumerate(self.labels.items(), start=1):
+            if index > _MAX_LABELS:
+                raise ValueError(
+                    f"Metric snapshot labels must contain at most {_MAX_LABELS} entries."
+                )
             if (
                 not isinstance(name, str)
                 or _NAME.fullmatch(name) is None
@@ -62,7 +69,8 @@ class MetricSnapshot:
                 or any(ord(character) < 32 or ord(character) == 127 for character in value)
             ):
                 raise ValueError("Metric snapshot labels must have valid names and text values.")
-        if self.kind == "histogram" and "le" in self.labels:
+            labels[name] = value
+        if self.kind == "histogram" and "le" in labels:
             raise ValueError("The Prometheus 'le' label is reserved for histogram buckets.")
         if not _is_finite(self.value) or not _is_finite(self.sum):
             raise ValueError("Metric snapshot values must be finite numbers.")
@@ -82,13 +90,14 @@ class MetricSnapshot:
         object.__setattr__(self, "value", numeric_value)
         object.__setattr__(self, "sum", total)
         if self.kind == "histogram":
-            if not isinstance(self.buckets, Mapping) or not self.buckets:
-                raise ValueError("Histogram snapshots require nonempty buckets.")
-            if len(self.buckets) > _MAX_BUCKETS:
-                raise ValueError(f"Histogram snapshots support at most {_MAX_BUCKETS} buckets.")
+            if not isinstance(self.buckets, Mapping):
+                raise TypeError("Histogram snapshots require a bucket mapping.")
+            bucket_values: dict[float, int] = {}
             bounds: list[float] = []
             bucket_counts: list[int] = []
-            for bound, bucket_count in self.buckets.items():
+            for index, (bound, bucket_count) in enumerate(self.buckets.items(), start=1):
+                if index > _MAX_BUCKETS:
+                    raise ValueError(f"Histogram snapshots support at most {_MAX_BUCKETS} buckets.")
                 if not _is_finite(bound) or bound <= 0:
                     raise ValueError("Histogram snapshot bounds must be finite and positive.")
                 if (
@@ -97,8 +106,12 @@ class MetricSnapshot:
                     or bucket_count < 0
                 ):
                     raise ValueError("Histogram snapshot counts must be nonnegative integers.")
-                bounds.append(float(bound))
+                numeric_bound = float(bound)
+                bounds.append(numeric_bound)
                 bucket_counts.append(bucket_count)
+                bucket_values[numeric_bound] = bucket_count
+            if not bucket_values:
+                raise ValueError("Histogram snapshots require nonempty buckets.")
             if tuple(sorted(set(bounds))) != tuple(bounds):
                 raise ValueError("Histogram snapshot bounds must be strictly increasing.")
             if any(count > self.count for count in bucket_counts):
@@ -110,9 +123,9 @@ class MetricSnapshot:
                 raise ValueError("Histogram bucket counts must be cumulative and nondecreasing.")
         elif self.buckets is not None:
             raise ValueError("Only histogram snapshots may contain buckets.")
-        object.__setattr__(self, "labels", freeze_value(dict(self.labels)))
-        if self.buckets is not None:
-            object.__setattr__(self, "buckets", freeze_value(dict(self.buckets.items())))
+        object.__setattr__(self, "labels", freeze_value(labels))
+        if self.kind == "histogram":
+            object.__setattr__(self, "buckets", freeze_value(bucket_values))
 
 
 class _Metric:

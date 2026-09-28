@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator
 
 from orbit._immutability import freeze_mapping, validate_mapping
+from orbit._limits import _MAX_CORE_CAPACITY, _MAX_RELATION_ENTRIES
 from orbit.container.scope import Scope
 from orbit.plugins.metadata import PluginMetadata
 from orbit.routing.models import RouteMetadata
@@ -58,6 +59,17 @@ class ProviderDescription(BaseModel):
             raise ValueError("Provider inspection text must be bounded printable strings.")
         return value
 
+    @field_validator("dependencies")
+    @classmethod
+    def validate_dependency_count(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        """Keep provider inspection graphs within the direct dependency edge limit."""
+        if len(values) > _MAX_RELATION_ENTRIES:
+            raise ValueError(
+                f"Provider inspection dependencies cannot contain more than "
+                f"{_MAX_RELATION_ENTRIES:,} entries."
+            )
+        return values
+
 
 class CompositionSnapshot(BaseModel):
     """Validated, detached metadata describing the currently composed application."""
@@ -70,6 +82,14 @@ class CompositionSnapshot(BaseModel):
     dependencies: tuple[ProviderDescription, ...]
     configuration_id: ConfigurationId
     configuration: dict[str, Any]
+
+    @field_validator("services", "plugins", "enabled_plugins", "routes", "dependencies")
+    @classmethod
+    def validate_collection_capacity(cls, values: tuple[object, ...]) -> tuple[object, ...]:
+        """Keep detached composition sections bounded before operator serialization."""
+        if len(values) > _MAX_CORE_CAPACITY:
+            raise ValueError("Composition snapshot collections exceed Core's capacity limit.")
+        return values
 
     @field_validator("configuration", mode="before")
     @classmethod

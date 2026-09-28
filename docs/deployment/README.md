@@ -30,6 +30,13 @@ external adapters; Core's in-memory implementations are process-local.
 Gunicorn owns the listening socket, worker processes, process signals, and replacement
 of crashed workers. Uvicorn owns ASGI protocol handling inside each worker. Orbit owns
 lifespan startup, readiness, request draining, cancellation, and component cleanup.
+`orbit serve --server gunicorn` replaces its CLI process with Gunicorn, keeping Gunicorn as the
+service-visible PID so container and supervisor signals reach the process manager directly.
+Orbit also owns forwarded client identity: the Orbit CLI disables host-level proxy identity
+rewriting and lets Core validate the immediate peer, configured proxy CIDRs, and forwarded
+values. If hosting is configured manually, keep Uvicorn's `forwarded_allow_ips` empty (and
+do not enable host-level proxy rewriting) so malformed forwarded values cannot bypass Core's
+fail-closed policy.
 Configure Gunicorn's graceful timeout to exceed the application's lifecycle timeout and
 the expected request-drain period. Lifecycle hooks must be idempotent because a worker
 can be terminated and started again.
@@ -69,7 +76,14 @@ ORBIT_RUN_HOSTING_TESTS=1 uv run --no-sync pytest -q tests/integration/test_guni
 It starts two `uvicorn_worker.UvicornWorker` processes, checks an HTTP route, sends SIGHUP and
 verifies repeated 64-request concurrent bursts before and after replacement workers serve the route, completes
 an in-flight request during graceful SIGTERM draining, and verifies every worker generation reaches
-Orbit service cleanup before the Gunicorn master exits cleanly. Run it alongside proxy, TLS, load,
+Orbit service cleanup before the Gunicorn master exits cleanly. It also terminates one replacement
+worker deliberately and verifies Gunicorn starts a replacement that serves traffic. Run it alongside proxy, TLS, load,
 and failure-injection tests; this smoke test is not a substitute for sustained load or network-level
 testing. The same opt-in suite also starts a direct Uvicorn process, sends repeated 16-request
-concurrent bursts, and uses SIGINT to verify the development server reaches Orbit lifespan cleanup.
+concurrent bursts, sends a deliberately stalled request body and conflicting framing to verify
+bounded rejection at the real socket boundary, forwards one request through a test proxy to
+verify the explicit trusted-proxy identity contract, rejects an oversized header at the host
+boundary, and uses SIGINT to verify the development server reaches Orbit lifespan cleanup. It also
+runs eight additional concurrent 32-request rounds and a bounded thirty-second request soak to
+provide stronger sustained-load evidence; this remains a smoke test, not a production-duration
+soak.

@@ -137,8 +137,11 @@ class Lifecycle:
                         continue
                     task.result()
             except asyncio.CancelledError:
-                if task is not None and not task.done():
-                    self._detach(index, task)
+                if task is not None:
+                    if task.done():
+                        self._retire(index, task)
+                    else:
+                        self._detach(index, task)
                 raise
             except Exception:
                 _LOG.exception("Lifecycle observer failed")

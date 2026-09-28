@@ -70,3 +70,33 @@ def test_state_transaction_rejects_owned_fields_and_closed_mutations():
         transaction.update(health="healthy")
     with pytest.raises(RuntimeError, match="closed"):
         transaction.commit()
+
+
+def test_state_transaction_change_capacity_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A state transaction cannot stage more distinct fields than Core permits."""
+    monkeypatch.setattr("orbit.state.store._MAX_CORE_CAPACITY", 1)
+    store = StateStore(ApplicationState(application_id=new_application_id()))
+    with pytest.raises(RuntimeError, match="capacity"), store.transaction() as transaction:
+        transaction.update(service_count=1)
+        transaction.update(health="healthy")
+    assert store.current.revision == 0
+
+
+def test_namespace_transaction_prepares_entries_before_publishing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An entry-construction failure during commit leaves state unpublished."""
+    import orbit.state.namespace as namespace_module
+
+    def fail_entry(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("copy failed during publication")
+
+    monkeypatch.setattr(namespace_module, "StateEntry", fail_entry)
+    namespace = namespace_module.StateNamespace("runtime")
+    with pytest.raises(RuntimeError, match="copy failed"), namespace.transaction() as transaction:
+        transaction.set("value", {"nested": True})
+
+    assert namespace.revision == 0
+    assert namespace.snapshot() == ()
+    with pytest.raises(RuntimeError, match="closed"):
+        transaction.set("other", {"nested": True})

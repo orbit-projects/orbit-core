@@ -305,6 +305,28 @@ async def test_supervisor_records_failure_and_observer_errors_are_isolated() -> 
 
 
 @pytest.mark.asyncio
+async def test_supervisor_sanitizes_unsafe_exception_type_names() -> None:
+    """Provider-defined exception names cannot break typed task failure diagnostics."""
+    unsafe_error = type("private\n" + "x" * 128, (RuntimeError,), {})
+
+    async def worker() -> None:
+        raise unsafe_error("private provider detail")
+
+    supervisor = TaskSupervisor()
+    supervisor.register("worker", worker)
+    await supervisor.start()
+
+    async def wait_for_failure() -> None:
+        while supervisor.infos[0].state is not TaskState.FAILED:
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(wait_for_failure(), timeout=0.2)
+    assert supervisor.infos[0].last_failure is not None
+    assert supervisor.infos[0].last_failure.error_type == "Exception"
+    await supervisor.stop()
+
+
+@pytest.mark.asyncio
 async def test_supervisor_bounds_async_observer_before_restart() -> None:
     attempts = 0
     observer_started = asyncio.Event()

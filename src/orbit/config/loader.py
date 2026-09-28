@@ -28,6 +28,69 @@ from orbit.config.models import ApplicationConfig
 from orbit.errors import ConfigurationError, ErrorCategory, OrbitProblem
 
 T = TypeVar("T", bound=BaseModel)
+_MAX_INPUT_VALUES = 100_000
+_MAX_INPUT_DEPTH = 64
+_MAX_PREFIX_LENGTH = 255
+
+
+def _copy_input_value(
+    value: object,
+    *,
+    budget: list[int],
+    active: set[int],
+    depth: int = 0,
+) -> Any:
+    """Validate and detach nested input before merge or Pydantic validation work.
+
+    Detaching during the first walk is important for custom mappings: validating one
+    iteration and merging a later iteration would allow a mutable source to change after
+    the work budget and key checks had already passed.
+    """
+    budget[0] += 1
+    if budget[0] > _MAX_INPUT_VALUES:
+        raise ValueError(f"Configuration input cannot exceed {_MAX_INPUT_VALUES:,} values.")
+    if not isinstance(value, (Mapping, list, tuple, set, frozenset)):
+        return value
+    if depth >= _MAX_INPUT_DEPTH:
+        raise ValueError(f"Configuration input cannot be nested beyond {_MAX_INPUT_DEPTH} levels.")
+    identity = id(value)
+    if identity in active:
+        raise ValueError("Configuration input cannot contain cyclic references.")
+    active.add(identity)
+    try:
+        if isinstance(value, Mapping):
+            copied: dict[str, Any] = {}
+            for key, item in value.items():
+                if (
+                    not isinstance(key, str)
+                    or not 1 <= len(key) <= 255
+                    or any(ord(character) < 32 or ord(character) == 127 for character in key)
+                ):
+                    raise ValueError(
+                        "Configuration input mapping keys must be bounded printable strings."
+                    )
+                copied[key] = _copy_input_value(item, budget=budget, active=active, depth=depth + 1)
+            return copied
+        if isinstance(value, list):
+            return [
+                _copy_input_value(item, budget=budget, active=active, depth=depth + 1)
+                for item in value
+            ]
+        if isinstance(value, tuple):
+            return tuple(
+                _copy_input_value(item, budget=budget, active=active, depth=depth + 1)
+                for item in value
+            )
+        if isinstance(value, set):
+            return {
+                _copy_input_value(item, budget=budget, active=active, depth=depth + 1)
+                for item in value
+            }
+        return frozenset(
+            _copy_input_value(item, budget=budget, active=active, depth=depth + 1) for item in value
+        )
+    finally:
+        active.remove(identity)
 
 
 def _decode_application_scalars(
@@ -88,7 +151,8 @@ def load_config(
             not isinstance(model, type)
             or not issubclass(model, BaseModel)
             or not isinstance(prefix, str)
-            or not prefix
+            or not 1 <= len(prefix) <= _MAX_PREFIX_LENGTH
+            or any(ord(character) < 32 or ord(character) == 127 for character in prefix)
             or isinstance(max_file_bytes, bool)
             or not isinstance(max_file_bytes, int)
             or not 1 <= max_file_bytes <= _MAX_CONFIG_FILE_BYTES
@@ -96,20 +160,38 @@ def load_config(
             or (environment is not None and not isinstance(environment, Mapping))
             or (file is not None and not isinstance(file, Path))
         ):
-            raise ValueError("Configuration loader arguments or file-size limit are invalid.")
-        if environment is not None and any(
-            not isinstance(name, str) or not isinstance(value, str)
-            for name, value in environment.items()
-        ):
-            raise ValueError("Configuration environment entries must be strings.")
+            raise ValueError(
+                "Configuration loader arguments, prefix, or file-size limit are invalid."
+            )
         explicit_values = values if values is not None else {}
         supplied_environment = environment if environment is not None else {}
+        input_budget = [0]
+        input_active: set[int] = set()
         if file is not None:
             with file.open("rb") as stream:
                 content = stream.read(max_file_bytes + 1)
             if len(content) > max_file_bytes:
                 raise ValueError("Configuration file exceeds size limit.")
-            merge(data, tomllib.loads(content.decode("utf-8")))
+            file_values = tomllib.loads(content.decode("utf-8"))
+            file_snapshot = _copy_input_value(file_values, budget=input_budget, active=input_active)
+            if not isinstance(file_snapshot, dict):
+                raise ValueError("Configuration file root must be a mapping.")
+            merge(data, file_snapshot)
+        explicit_snapshot = _copy_input_value(
+            explicit_values, budget=input_budget, active=input_active
+        )
+        environment_snapshot = _copy_input_value(
+            supplied_environment, budget=input_budget, active=input_active
+        )
+        if not isinstance(explicit_snapshot, dict) or not isinstance(environment_snapshot, dict):
+            raise ValueError("Configuration inputs must be mappings.")
+        explicit_values = explicit_snapshot
+        supplied_environment = environment_snapshot
+        if any(
+            not isinstance(name, str) or not isinstance(value, str)
+            for name, value in supplied_environment.items()
+        ):
+            raise ValueError("Configuration environment entries must be strings.")
         merge(data, explicit_values)
         seen: set[tuple[str, ...]] = set()
         for name, value in sorted(supplied_environment.items()):
@@ -122,6 +204,7 @@ def load_config(
                 raise ValueError("Ambiguous environment field casing.")
             seen.add(tuple(parts))
             decoded = json.loads(value) if value.lstrip().startswith(("[", "{")) else value
+            decoded = _copy_input_value(decoded, budget=input_budget, active=input_active)
             cursor = data
             for part in parts[:-1]:
                 existing = cursor.setdefault(part, {})
@@ -139,7 +222,7 @@ def load_config(
         if model is ApplicationConfig:
             _decode_application_scalars(data, supplied_environment, prefix=prefix)
         return model.model_validate(data)
-    except (OSError, ValueError, RecursionError) as exc:
+    except (OSError, TypeError, ValueError, RecursionError) as exc:
         fields = (
             [".".join(map(str, error["loc"])) for error in exc.errors(include_input=False)]
             if isinstance(exc, ValidationError)

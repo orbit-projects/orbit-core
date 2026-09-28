@@ -13,6 +13,7 @@
 # limitations under the License.
 """Real Typer commands exercise application loading, graph checks and isolated health sessions."""
 
+import os
 import sys
 import types
 
@@ -108,6 +109,8 @@ def test_serve_passes_core_asgi_to_host(target, monkeypatch):
     assert calls[0][0][0] is target.runtime.asgi
     assert calls[0][1]["lifespan"] == "on"
     assert calls[0][1]["timeout_keep_alive"] == 5
+    assert calls[0][1]["proxy_headers"] is False
+    assert calls[0][1]["forwarded_allow_ips"] == ""
     assert target.runtime.info.application_name == "cli-test"
     assert target.runtime.info.service_count == 1
     assert target.runtime.info.child_count == 0
@@ -136,11 +139,15 @@ def test_reload_command_uses_uvicorn_source_reload(target, monkeypatch):
     assert calls[0][0][0] == "orbit_test_target:runtime"
     assert calls[0][1]["reload"] is True
     assert calls[0][1]["workers"] == 1
+    assert calls[0][1]["proxy_headers"] is False
+    assert calls[0][1]["forwarded_allow_ips"] == ""
 
 
 def test_serve_gunicorn_uses_uvicorn_worker(target, monkeypatch):
     calls = []
-    monkeypatch.setattr("subprocess.call", lambda command: calls.append(command) or 0)
+    monkeypatch.setattr(
+        os, "execv", lambda executable, command: calls.append((executable, command))
+    )
     result = runner.invoke(
         app,
         [
@@ -155,14 +162,43 @@ def test_serve_gunicorn_uses_uvicorn_worker(target, monkeypatch):
         ],
     )
     assert result.exit_code == 0, result.output
-    assert calls[0][0:3] == [sys.executable, "-m", "gunicorn"]
-    assert "uvicorn_worker.UvicornWorker" in calls[0]
-    assert "45" in calls[0]
+    assert calls[0][0] == sys.executable
+    command = calls[0][1]
+    assert command[0:3] == [sys.executable, "-m", "gunicorn"]
+    assert "uvicorn_worker.UvicornWorker" in command
+    assert command[command.index("--forwarded-allow-ips") + 1] == ""
+    assert "45" in command
+
+
+def test_serve_reports_missing_host_extra(target, monkeypatch):
+    import importlib
+
+    cli_module = importlib.import_module("orbit.cli.app")
+    real_import_module = cli_module.importlib.import_module
+
+    def import_module(name):
+        if name == "uvicorn_worker":
+            raise ImportError(name)
+        return real_import_module(name)
+
+    monkeypatch.setattr(
+        cli_module.importlib,
+        "import_module",
+        import_module,
+    )
+    result = runner.invoke(
+        app,
+        ["serve", "orbit_test_target:runtime", "--server", "gunicorn"],
+    )
+    assert result.exit_code == 1
+    assert "Install orbit-core[server]" in result.output
 
 
 def test_serve_gunicorn_wires_worker_lifecycle_controls(target, monkeypatch):
     calls = []
-    monkeypatch.setattr("subprocess.call", lambda command: calls.append(command) or 0)
+    monkeypatch.setattr(
+        os, "execv", lambda executable, command: calls.append((executable, command))
+    )
     result = runner.invoke(
         app,
         [
@@ -181,7 +217,7 @@ def test_serve_gunicorn_wires_worker_lifecycle_controls(target, monkeypatch):
         ],
     )
     assert result.exit_code == 0, result.output
-    command = calls[0]
+    command = calls[0][1]
     assert command[command.index("--timeout") + 1] == "61"
     assert command[command.index("--keep-alive") + 1] == "11"
     assert command[command.index("--max-requests") + 1] == "1000"

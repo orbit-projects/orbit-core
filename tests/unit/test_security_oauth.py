@@ -39,6 +39,13 @@ def test_authorization_request_requires_strong_pkce() -> None:
             code_challenge="a" * 43,
             code_challenge_method="plain",
         )
+    with pytest.raises(ValueError, match="code_challenge_method=S256"):
+        OAuthAuthorizationRequest(
+            client_id="client",
+            redirect_uri="https://example.test/callback",
+            state="1234567890123456",
+            code_challenge="a" * 43,
+        )
     with pytest.raises(ValidationError):
         OAuthAuthorizationRequest(
             client_id="client",

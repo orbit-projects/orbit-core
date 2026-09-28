@@ -32,6 +32,7 @@ _SECTION_NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,62}$")
 _MAX_CONFIG_HISTORY = 1_000_000
 _MAX_CONFIG_DEPTH = 64
 _MAX_CONFIG_VALUES = 100_000
+_MAX_CONFIG_KEY_LENGTH = 255
 
 
 @dataclass(frozen=True)
@@ -50,7 +51,9 @@ class ConfigSnapshot:
             raise TypeError("Configuration snapshots require a UUID-backed identity.")
         if not isinstance(self.values, Mapping):
             raise TypeError("Configuration snapshot values must be a mapping.")
-        object.__setattr__(self, "values", _freeze(dict(self.values)))
+        # Let _freeze walk the caller mapping directly so its recursive work budget is enforced
+        # before a custom mapping can be fully materialized by dict(self.values).
+        object.__setattr__(self, "values", _freeze(self.values))
 
     def as_dict(self) -> dict[str, object]:
         """Return a detached mutable copy for serialization or comparison."""
@@ -85,9 +88,13 @@ def _freeze(
             if isinstance(value, Mapping):
                 frozen: dict[str, object] = {}
                 for key, item in value.items():
-                    if not isinstance(key, str) or not key:
+                    if (
+                        not isinstance(key, str)
+                        or not 1 <= len(key) <= _MAX_CONFIG_KEY_LENGTH
+                        or any(ord(character) < 32 or ord(character) == 127 for character in key)
+                    ):
                         raise ValueError(
-                            "Configuration snapshot mapping keys must be nonempty strings."
+                            "Configuration snapshot mapping keys must be bounded printable strings."
                         )
                     if key in frozen:
                         raise ValueError("Configuration snapshot mapping keys must be unique.")

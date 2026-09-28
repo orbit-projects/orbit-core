@@ -83,11 +83,18 @@ See [architecture](docs/architecture/overview.md), [dependency injection](docs/c
 The [public roadmap](ROADMAP.md) distinguishes implemented Core contracts from planned hardening,
 ecosystem plugins, cross-language plugin transport, and long-term CNCF readiness.
 
+## Community and governance
+
+Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md), the [Code of Conduct](CODE_OF_CONDUCT.md),
+and the [governance policy](GOVERNANCE.md). The [maintainer directory](MAINTAINERS.md) records
+release and Core-contract responsibility. Report vulnerabilities privately under
+[SECURITY.md](SECURITY.md).
+
 ## Release status
 
 The package remains pre-release (`0.1.0a1`). Local behavioral tests and static checks establish
 specific guarantees; hosted CI, security scans and deployment-specific load testing are separate
 release evidence. [Production operations](docs/development/operations.md) describes those boundaries.
 
-Source: [orbit-projects/orbit_core](https://github.com/orbit-projects/orbit_core).
+Source: [orbit-projects/orbit-core](https://github.com/orbit-projects/orbit-core).
 Licensed under Apache-2.0; maintained Python files carry the full license notice.

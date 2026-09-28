@@ -7,6 +7,11 @@ runtime and cross-cutting contracts, but it is not certified for commercial prod
 local and uncommitted; it has not been pushed to GitHub. Preserve the user's root `app.py` state if
 present and do not reset or clean the worktree without explicit instruction.
 
+Progress is measured by the repository scorecard in `docs/development/completion.md`, not by
+informal estimates. The current evidence score is **87/100**. The local Core validation gate
+passes; hosted CI/security results, deployment pressure testing, and hosted release provenance
+remain unverified and are not counted.
+
 ## Hosting decision
 
 The authoritative hosting model is:
@@ -60,7 +65,9 @@ future work must emphasize protocol security, fuzzing, load testing, and mainten
   out calls retain their capacity until the underlying adapter actually returns.
 - CLI inspection/health/diagnostics commands, bounded `health-watch`, plus `serve`, `run`, and
   `start` hosting commands.
-- CI matrix and architecture/concepts/runtime/security/operations documentation updates.
+- CI matrix now runs every supported interpreter independently, retains per-interpreter coverage
+  artifacts, and bounds hosted security analysis; architecture/concepts/runtime/security/operations
+  documentation is updated alongside it.
 - Production deployment runbook covering the Gunicorn/Uvicorn worker topology, proxy trust,
   health probes, resource ownership, graceful shutdown, and network-level release checks.
 
@@ -72,6 +79,7 @@ The latest full validation passed:
 .venv/bin/uv run --no-sync ruff format src tests
 .venv/bin/uv run --no-sync ruff check src tests
 .venv/bin/uv run --no-sync mypy src
+.venv/bin/uv run --no-sync python scripts/check-workflows.py
 .venv/bin/uv run --no-sync python scripts/check-model-boundaries.py
 .venv/bin/uv run --no-sync pytest -q
 .venv/bin/uv run --no-sync python scripts/check-documentation.py
@@ -81,7 +89,7 @@ The latest full validation passed:
 git diff --check
 ```
 
-Latest test count: **1026 passed, 2 skipped** (the opt-in hosting tests are skipped unless enabled). Full coverage validation now remains above the declared gate at **91.41%** on Python 3.11, satisfying the
+Latest test count: **1108 passed, 2 skipped** (the opt-in hosting tests are skipped unless enabled). Full coverage validation now remains above the declared gate at **91.96%** on Python 3.11, satisfying the
 declared 90% gate. This is test coverage evidence only; production load, multi-process, proxy, and
 security certification work is still outstanding.
 
@@ -89,34 +97,42 @@ The opt-in two-worker Gunicorn smoke test has passed with `uvicorn_worker.Uvicor
 Python 3.11, 3.12, 3.13, and 3.14: each worker generation served repeated 64-request concurrent bursts,
 SIGHUP replacement workers served the route, an in-flight request completed during graceful
 termination, every worker generation reached service cleanup, and the master terminated cleanly.
-The same opt-in process suite starts a direct Uvicorn development server on each interpreter,
-serves repeated 16-request concurrent bursts, and verifies SIGINT-driven lifespan cleanup.
+The suite also terminates one replacement worker deliberately and verifies Gunicorn starts a
+replacement that serves traffic.
+The same opt-in process suite starts the supported `orbit serve --server uvicorn` development
+path on each interpreter,
+serves repeated 16-request concurrent bursts, rejects a stalled body and conflicting framing at the
+real socket boundary, verifies valid and malformed trusted-proxy identity through a forwarding hop
+in both direct Uvicorn and Gunicorn workers, runs eight additional concurrent 32-request rounds plus
+a bounded thirty-second request soak, and verifies SIGINT-driven lifespan cleanup.
 Enable it with `ORBIT_RUN_HOSTING_TESTS=1 uv run --no-sync pytest -q tests/integration/test_gunicorn_host.py`.
 
 Additional local compatibility validation now covers Python 3.12.14, 3.13.15, and 3.14.7: each
-interpreter passes all **1026 behavioral tests** with the two opt-in hosting tests excluded from the
+interpreter passes all **1108 behavioral tests** with the two opt-in hosting tests excluded from the
 default run, and the enabled Gunicorn/Uvicorn process tests pass. Hosted GitHub Actions results
 are still required before release claims are made.
 
 Release checks also pass locally: the source distribution and wheel build successfully, the
 package integrity verifier confirms their contents and metadata, the license-header verifier is
 clean, `pip-audit --skip-editable` reports no known vulnerabilities, a 58-component CycloneDX SBOM
-is valid, and SHA-256 checksums for both distributions verify. Hosted provenance attestation
-remains a separate release gate.
+is valid, and SHA-256 checksums for both distributions verify. Configuration inputs are also
+detached during bounded validation so mutable custom mappings cannot change between validation and
+composition. Hosted provenance attestation remains a separate release gate.
 
-The public repository status was checked on 2026-09-27. CodeQL and OpenSSF Scorecard completed
-successfully on `main`. The newest Dependabot CI run did not reach the build steps: its Python 3.13
-job failed at the license-header check because that remote commit still contains the unlicensed
-scaffold `app.py`; the local worktree's maintained license check is clean and the scaffold is
-removed locally. The active `main-protection` ruleset requires reviews, signatures, code scanning,
-code quality, and 80% coverage, but currently has no required status-check contexts configured.
-The ruleset and hosted workflows still need an authenticated maintainer to verify and update them
-after the Core changes are committed and pushed.
+The public repository status was checked on 2026-09-28 through GitHub's public API. CI, CodeQL, and
+OpenSSF Scorecard completed successfully on public `main` commit
+`aaf49f27ad34eed130ebdcf13e5bec624fecfb5d`; those runs predate the current unpushed Core changes.
+The active `main-protection` ruleset targets the default branch and requires one approving review,
+code-owner review, linear history, CodeQL scanning, code-quality errors, and 80% coverage, but its
+required status-check list is empty. After the Core changes are committed and pushed, an
+authenticated maintainer must open a pull request, verify the new matrix results, and add the exact
+reported status contexts to the ruleset. The public release-workflow history currently has no runs,
+so hosted artifact upload and build-provenance attestation remain unverified.
 
 ## Highest-priority remaining work
 
 1. Verify the hosted GitHub evidence: run the pull-request CI, CodeQL, and Scorecard workflows;
-   configure the documented `protect-main` ruleset using the exact reported check names; and run
+   configure the documented `main-protection` ruleset using the exact reported check names; and run
    the release workflow to confirm the SBOM, checksums, artifact upload, and provenance attestation.
 2. Continue deployment-level validation of the custom HTTP/router layer with protocol fuzzing,
    load testing, proxy behavior, and real provider adapters. These are outside the deterministic

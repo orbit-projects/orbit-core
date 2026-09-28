@@ -268,41 +268,44 @@ class NamespaceTransaction:
         """Validate the base revision and atomically apply all staged changes."""
         self._ensure_open()
         namespace = self._namespace
-        with namespace._lock:
-            namespace._purge()
-            if namespace._revision != self._revision:
-                self._closed = True
-                raise ValueError("Stale state namespace revision.")
-            additions = sum(
-                key not in namespace._entries and change is not _DELETE
-                for key, change in self._changes.items()
-            )
-            if len(namespace._entries) + additions > namespace._max_entries:
-                self._closed = True
-                raise RuntimeError("State namespace capacity reached.")
-            prepared: dict[str, tuple[Any, float | None] | object] = {}
-            for key, change in self._changes.items():
-                if change is _DELETE:
-                    prepared[key] = _DELETE
-                elif isinstance(change, tuple):
-                    prepared[key] = (copy.deepcopy(change[0]), change[1])
-            mutated = any(
-                change is not _DELETE or key in namespace._entries
-                for key, change in prepared.items()
-            )
-            if mutated:
-                namespace._revision += 1
-                revision = namespace._revision
-                for key, change in prepared.items():
+        try:
+            with namespace._lock:
+                namespace._purge()
+                if namespace._revision != self._revision:
+                    raise ValueError("Stale state namespace revision.")
+                additions = sum(
+                    key not in namespace._entries and change is not _DELETE
+                    for key, change in self._changes.items()
+                )
+                if len(namespace._entries) + additions > namespace._max_entries:
+                    raise RuntimeError("State namespace capacity reached.")
+                mutated = any(
+                    change is not _DELETE or key in namespace._entries
+                    for key, change in self._changes.items()
+                )
+                if not mutated:
+                    return namespace._revision
+
+                revision = namespace._revision + 1
+                deletions: list[str] = []
+                replacements: dict[str, StateEntry] = {}
+                # Construct every replacement before publishing the new revision. StateEntry
+                # detaches arbitrary caller values and may fail during deepcopy; no namespace
+                # mutation is allowed until every staged entry has been prepared successfully.
+                for key, change in self._changes.items():
                     if change is _DELETE:
-                        namespace._entries.pop(key, None)
+                        deletions.append(key)
                     elif isinstance(change, tuple):
                         value, expires_at = change
-                        namespace._entries[key] = StateEntry(key, value, revision, expires_at)
-            else:
-                revision = namespace._revision
-        self._closed = True
-        return revision
+                        replacements[key] = StateEntry(key, value, revision, expires_at)
+                namespace._revision = revision
+                for key in deletions:
+                    namespace._entries.pop(key, None)
+                namespace._entries.update(replacements)
+                return revision
+        finally:
+            # A failed commit cannot be safely retried after its optimistic base was checked.
+            self._closed = True
 
     def rollback(self) -> None:
         """Discard staged changes without modifying the namespace."""

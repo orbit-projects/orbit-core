@@ -11,7 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Bounded request diagnostics and failure-isolated telemetry hooks."""
+"""Bounded request diagnostics and failure-isolated telemetry hooks.
+
+Telemetry sinks are application-provided code. Core therefore isolates sink failures and records
+only a constant diagnostic message; exception text and tracebacks can contain provider payloads
+or credentials and must not enter the framework's operator log by default.
+"""
 
 from __future__ import annotations
 
@@ -113,7 +118,10 @@ class Diagnostics:
             try:
                 sink.record(record)
             except Exception:
-                _LOG.exception("Telemetry sink failed")
+                # Do not attach the exception: a sink may include credentials or provider data
+                # in its message. The host can instrument sink health separately if it needs
+                # backend-specific failure details.
+                _LOG.error("Telemetry sink failed; observer isolated.")
 
     def collect(self, application: Application) -> DiagnosticSnapshot:
         """Capture current Core state and cumulative request metrics."""

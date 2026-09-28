@@ -52,11 +52,20 @@ requested.
 The release workflow builds only from main, repeats validation, produces distributions and
 a dependency CycloneDX inventory, validates its JSON syntax, repeats the managed
 Gunicorn/Uvicorn worker smoke test, records and verifies SHA-256 checksums, and requests GitHub
-build provenance for the complete artifact directory. The inventory covers the installed
+build provenance for the complete artifact directory. Before signing, `scripts/check-release.py`
+validates that every direct `dist/` file is covered by the checksum manifest and validates the
+CycloneDX inventory. It also signs the complete `dist/` set
+with Sigstore using the workflow's OIDC identity and uploads the signing artifacts. The inventory
+covers the installed
 build/test environment, not just runtime dependencies. Hosted execution and attestation
 availability depend on repository settings.
 
-The repository URL is https://github.com/orbit-projects/orbit_core. The current CODEOWNERS
+The fixed scorecard is also a release decision gate. Run
+`uv run --no-sync python scripts/check-scorecard.py --require-stable` only when the hosted CI,
+deployment, and provenance evidence for the proposed release is current. A successful local
+artifact-integrity check must not be presented as permission to publish while that command fails.
+
+The repository URL is https://github.com/orbit-projects/orbit-core. The current CODEOWNERS
 team entry still requires confirmation that the team exists and has write access.
 Branch protection, review policy, vulnerability reporting, secret scanning and actual
 OpenSSF results must be verified on GitHub. Local workflow files do not establish a badge.

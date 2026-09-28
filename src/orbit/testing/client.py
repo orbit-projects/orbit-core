@@ -24,7 +24,13 @@ from urllib.parse import unquote, urlsplit
 
 from orbit._limits import is_finite_number
 from orbit.asgi.application import ASGIApplication
-from orbit.asgi.request import Headers
+from orbit.asgi.request import (
+    MAX_HEADER_BYTES,
+    MAX_HEADER_COUNT,
+    MAX_PATH_BYTES,
+    MAX_QUERY_BYTES,
+    Headers,
+)
 from orbit.asgi.types import Message
 
 
@@ -152,19 +158,35 @@ class TestClient:
         if not isinstance(body, bytes):
             raise TypeError("Request body must be bytes.")
         url = urlsplit(path)
+        raw_path = url.path or "/"
+        try:
+            raw_path_bytes = raw_path.encode("utf-8")
+            query_bytes = url.query.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ValueError("Request URL must contain valid Unicode text.") from exc
+        if len(raw_path_bytes) > MAX_PATH_BYTES:
+            raise ValueError("Request path exceeds the maximum supported length.")
+        if len(query_bytes) > MAX_QUERY_BYTES:
+            raise ValueError("Request query string exceeds the maximum supported length.")
         pairs = (
             headers.items()
             if isinstance(headers, Mapping)
             else (headers if headers is not None else ())
         )
         wire_headers: list[tuple[bytes, bytes]] = []
+        header_bytes = 0
         for name, value in pairs:
             if not isinstance(name, str) or not isinstance(value, str):
                 raise TypeError("Request header names and values must be strings.")
             try:
-                wire_headers.append((name.encode("latin-1"), value.encode("latin-1")))
+                encoded_name = name.encode("latin-1")
+                encoded_value = value.encode("latin-1")
             except UnicodeEncodeError as exc:
                 raise ValueError("Request headers must be Latin-1 encodable.") from exc
+            header_bytes += len(encoded_name) + len(encoded_value) + 2
+            if len(wire_headers) >= MAX_HEADER_COUNT or header_bytes > MAX_HEADER_BYTES:
+                raise ValueError("Request headers exceed the safety limit.")
+            wire_headers.append((encoded_name, encoded_value))
         messages: list[Message] = []
         received = False
 
@@ -195,13 +217,13 @@ class TestClient:
                 "type": "http",
                 "asgi": {"version": "3.0"},
                 "method": method.upper(),
-                "path": unquote(url.path or "/", encoding="utf-8", errors="strict"),
-                "raw_path": (url.path or "/").encode("utf-8"),
+                "path": unquote(raw_path, encoding="utf-8", errors="strict"),
+                "raw_path": raw_path_bytes,
                 "scheme": url.scheme or "http",
                 "http_version": "1.1",
                 "root_path": "",
                 "client": ("127.0.0.1", 54321),
-                "query_string": url.query.encode(),
+                "query_string": query_bytes,
                 "headers": wire_headers,
             },
             receive,

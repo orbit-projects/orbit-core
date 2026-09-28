@@ -29,6 +29,7 @@ behavior that must be supplied and validated by plugins.
 - [Documentation conventions](development/documentation.md)
 - [Public API stability](development/api-stability.md)
 - [Repository governance](development/repository-governance.md)
+- [Project governance](../GOVERNANCE.md)
 - [Core release gate](development/completion.md)
 - [API reference guide](reference.md)
 - [Public roadmap](../ROADMAP.md)

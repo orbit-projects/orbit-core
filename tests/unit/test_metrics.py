@@ -13,10 +13,35 @@
 # limitations under the License.
 """Verify bounded metrics registration, snapshots, exposition, and diagnostics export."""
 
+from collections.abc import Iterator, Mapping
+
 import pytest
 
 from orbit import Application, ApplicationConfig
 from orbit.diagnostics import MetricSnapshot, MetricsRegistry
+
+
+class _MisreportingMapping(Mapping[object, object]):
+    """Mapping that reports no entries but yields more than a metric limit."""
+
+    def __init__(self, count: int, value: object, *, numeric_keys: bool = False) -> None:
+        self._count = count
+        self._value = value
+        self._numeric_keys = numeric_keys
+
+    def __getitem__(self, key: object) -> object:
+        index = int(key) if self._numeric_keys else int(str(key).removeprefix("label_"))
+        if (1 <= index <= self._count) if self._numeric_keys else (0 <= index < self._count):
+            return self._value
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[object]:
+        if self._numeric_keys:
+            return iter(float(index + 1) for index in range(self._count))
+        return iter(f"label_{index}" for index in range(self._count))
+
+    def __len__(self) -> int:
+        return 0
 
 
 def test_metrics_registry_snapshots_counters_gauges_and_histograms():
@@ -88,6 +113,17 @@ def test_metric_snapshots_validate_exporter_boundaries() -> None:
         )
     with pytest.raises(ValueError, match="reserved"):
         MetricSnapshot("metric", "histogram", {"le": "1"}, 1, count=1, buckets={1.0: 1})
+    with pytest.raises(ValueError, match="at most"):
+        MetricSnapshot("metric", "gauge", _MisreportingMapping(33, "value"), 1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="at most"):
+        MetricSnapshot(
+            "metric",
+            "histogram",
+            {},
+            1,
+            count=1,
+            buckets=_MisreportingMapping(101, 0, numeric_keys=True),  # type: ignore[arg-type]
+        )
 
 
 def test_metrics_registry_rejects_invalid_values_and_definitions():

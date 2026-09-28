@@ -105,3 +105,32 @@ async def test_cancellation_resistant_observer_is_detached_until_it_retires() ->
 
     await lifecycle.transition(LifecyclePhase.STARTING)
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_retires_completed_observer_failure_when_transition_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation after observer completion must consume the completed failure."""
+    import orbit.lifecycle.lifecycle as lifecycle_module
+
+    original_wait = asyncio.wait
+
+    async def wait_then_cancel(tasks, *, timeout):
+        done, pending = await original_wait(tasks, timeout=timeout)
+        current = asyncio.current_task()
+        assert current is not None
+        current.cancel()
+        await asyncio.sleep(0)
+        return done, pending
+
+    monkeypatch.setattr(lifecycle_module.asyncio, "wait", wait_then_cancel)
+
+    async def failing_observer(transition):
+        raise RuntimeError("private observer failure")
+
+    lifecycle = Lifecycle()
+    lifecycle.observe(failing_observer)
+    with pytest.raises(asyncio.CancelledError):
+        await lifecycle.transition(LifecyclePhase.CONFIGURED)
+    assert not lifecycle._detached  # noqa: SLF001 - verify completed failure retirement.
