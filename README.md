@@ -96,5 +96,5 @@ The package remains pre-release (`0.1.0a1`). Local behavioral tests and static c
 specific guarantees; hosted CI, security scans and deployment-specific load testing are separate
 release evidence. [Production operations](docs/development/operations.md) describes those boundaries.
 
-Source: [orbit-projects/orbit_core](https://github.com/orbit-projects/orbit_core).
+Source: [orbit-projects/orbit-core](https://github.com/orbit-projects/orbit-core).
 Licensed under Apache-2.0; maintained Python files carry the full license notice.
