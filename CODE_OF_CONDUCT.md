@@ -6,7 +6,7 @@ maintainer-run community channels.
 
 The repository does not currently publish a dedicated conduct address. Until one is available,
 contact a maintainer privately through GitHub. Do not use a public issue for a conduct report.
-Security vulnerabilities must be reported through [GitHub Security Advisories](https://github.com/orbit-projects/orbit-core/security/advisories/new)
+Security vulnerabilities must be reported through [GitHub Security Advisories](https://github.com/orbit-projects/orbit_core/security/advisories/new)
 instead of the conduct channel.
 
 Maintainers will acknowledge reports promptly, protect the reporter's privacy where possible,

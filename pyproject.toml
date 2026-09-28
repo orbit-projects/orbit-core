@@ -31,10 +31,10 @@ dependencies = [
 orbit = "orbit.cli:app"
 
 [project.urls]
-Source = "https://github.com/orbit-projects/orbit-core"
-Issues = "https://github.com/orbit-projects/orbit-core/issues"
-Documentation = "https://github.com/orbit-projects/orbit-core/tree/main/docs"
-Security = "https://github.com/orbit-projects/orbit-core/security/policy"
+Source = "https://github.com/orbit-projects/orbit_core"
+Issues = "https://github.com/orbit-projects/orbit_core/issues"
+Documentation = "https://github.com/orbit-projects/orbit_core/tree/main/docs"
+Security = "https://github.com/orbit-projects/orbit_core/security/policy"
 
 [project.optional-dependencies]
 server = [

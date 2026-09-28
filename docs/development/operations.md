@@ -65,7 +65,7 @@ The fixed scorecard is also a release decision gate. Run
 deployment, and provenance evidence for the proposed release is current. A successful local
 artifact-integrity check must not be presented as permission to publish while that command fails.
 
-The repository URL is https://github.com/orbit-projects/orbit-core. The current CODEOWNERS
+The repository URL is https://github.com/orbit-projects/orbit_core. The current CODEOWNERS
 team entry still requires confirmation that the team exists and has write access.
 Branch protection, review policy, vulnerability reporting, secret scanning and actual
 OpenSSF results must be verified on GitHub. Local workflow files do not establish a badge.
