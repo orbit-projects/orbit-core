@@ -4,8 +4,80 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Optional JSON log formatting moved from Core into the separately installable `orbit-logging`
+  package. Core retains diagnostic collection and task-local correlation contracts; applications
+  now import `JSONFormatter` from `orbit_logging`.
+- TOML file polling moved from Core into the separately installable `orbit-devtools` package.
+  Core retains the `ConfigurationWatcher` lifecycle protocol and atomic extension-section reload
+  contract without requiring filesystem watching.
+- CORS policy and gzip response compression moved into the separately installable `orbit-gateway`
+  package. Core retains its ASGI middleware protocol and registration API, without bundling these
+  optional HTTP policies.
+- Core security now includes an opt-in static-user Basic Auth baseline with salted PBKDF2 password
+  hashes, HTTPS-required-by-default verification, bounded worker concurrency, and RFC challenge
+  headers. JWT signature verification moved to the separately installable `orbit-jwt` repository;
+  Core keeps `TokenVerifier` and token policy contracts without depending on PyJWT.
+- Prometheus exposition and `/metrics` routing moved out of Core into the `orbit-metrics` capability
+  and `orbit-prometheus` adapter repositories. Core retains bounded metric instruments and immutable
+  snapshots, but does not reserve a scrape path or impose Prometheus-specific histogram labels.
+- Application-level retry, deadlines, circuit breakers, failure classifiers, and bulkheads moved to
+  the separately installable `orbit-resilience` repository. Core still owns its lifecycle, request,
+  cleanup, and administrative timeout guarantees.
+- Core now defines a shared asynchronous SQL contract and ships an stdlib SQLite baseline isolated
+  on a dedicated worker thread. Reads are bounded, transactions are serialized and task-bound, and
+  database errors omit SQL and raw driver details. Server database drivers remain adapter concerns;
+  Redis remains a separate key-value capability. See [ADR 0007](docs/architecture/adr/0007-core-sqlite-capability.md).
+- SQLite and the PostgreSQL adapter now report unique/primary-key violations through the stable
+  `database.constraint-conflict` SQL error code. The `orbit-sql` repository capability translates
+  it to `orbit_data.RepositoryConflictError` for write operations and deferred unit-of-work commit
+  failures without exposing vendor details.
+  See [ADR 0008](docs/architecture/adr/0008-sql-repository-conflicts.md).
+- The Core web-layer direction is now explicit: Orbit retains its native ASGI and routing boundary,
+  superseding the earlier FastAPI wording in the project prompt. Development remains on Uvicorn;
+  production remains Gunicorn with `uvicorn-worker`. See
+  [ADR 0005](docs/architecture/adr/0005-native-asgi-boundary.md).
+- Hosting dependencies now follow that deployment split: `orbit-core[development-server]` installs
+  only Uvicorn for local development, while `orbit-core[server]` installs Uvicorn, Gunicorn, and
+  `uvicorn-worker` for production. The CLI recommends the selected host's matching extra.
+- The in-process ASGI `TestClient` and its contract tests now live in the separate, optional
+  `orbit-testing` distribution. Core exposes only the public ASGI protocol types and request limits
+  needed by that utility; Core's own tests install the sibling package as a development dependency.
+  See [ADR 0013](docs/architecture/adr/0013-optional-asgi-test-client.md).
+- Plugin documentation now distinguishes the implemented in-process Python entry-point host from
+  the planned multi-language ecosystem; Core does not yet implement a cross-language plugin
+  protocol or native plugin binding.
+
 ### Fixed
 
+- Tox's Python compatibility environments now install the optional server extra as well as the
+  development extra, so CLI hosting tests exercise the declared Uvicorn/Gunicorn dependencies;
+  each tox environment also writes to its own coverage data file when matrix jobs run in parallel.
+- Documentation and license-header scanners now exclude generated tox environments and caches,
+  so local validation does not inspect vendor documentation or Python files as maintained source.
+- Namespaced in-memory state now indexes TTL deadlines with a compacted min-heap, avoiding a full
+  namespace scan on each operation while preventing stale refresh deadlines from expiring live
+  entries.
+- Background-task failure history now uses a bounded deque, retaining newest failures without
+  repeatedly shifting up to one million older entries on each failure.
+- Failed administrative attempts to operate on missing services or tasks now produce bounded
+  audit records with a safe not-found code before returning 404.
+- Token, policy, JWKS, and revocation expiry comparisons now order exact UTC instants across
+  daylight-saving repeated hours; revocation cleanup also removes only expired indexed entries
+  instead of rescanning the complete retained-token set on each lookup.
+- Role and named-policy authorization now require a validated Core `Principal` instance instead of
+  trusting a caller-supplied object that merely exposes a matching `roles` attribute.
+- `AdminClient` now binds atomically to the event loop of its first request and rejects reuse from
+  another loop, making ownership of its asyncio semaphores and pending operations explicit.
+- Background-task supervisor shutdown now defers caller cancellation until bounded task cleanup
+  completes or reaches its shutdown deadline, then propagates cancellation to that caller.
+- In-process rate-limit bucket eviction now uses an explicit least-recently-used policy with
+  constant-time eviction instead of scanning every retained identity at capacity.
+- Rate-limit identity keys now reject Unicode C1 controls as well as ASCII controls, matching the
+  documented control-free key contract.
+- GitHub Actions policy validation now rejects workflow-wide write permissions, requires checkout
+  credentials to be disabled, and continues to require job timeouts and pinned action revisions.
 - JSON-shaped structured Core mappings now validate nested keys as bounded printable text,
   preventing byte or control-bearing keys from bypassing event, diagnostic, administrative, and
   JSON serialization boundaries while preserving typed internal mapping keys.
@@ -42,11 +114,11 @@ All notable changes to this project are documented in this file.
   matching, preventing oversized or control-bearing audience metadata from reaching authorization.
 - Application state transactions now enforce Core's shared capacity limit on distinct staged
   fields, preventing an unbounded pending mutation batch.
-- The in-process TestClient now applies Core request-header count and byte limits while copying
+- The ASGI test client now applies Core request-header count and byte limits while copying
   caller input, preventing oversized custom mappings from being materialized before ASGI validation.
 - Response construction now applies header count and byte limits to the final wire set, including
   the runtime-generated `Content-Length` on buffered responses.
-- The in-process TestClient now applies Core path and query byte limits before URL normalization,
+- The ASGI test client now applies Core path and query byte limits before URL normalization,
   keeping its request-construction boundary aligned with direct Core requests.
 - Nested applications now enforce single-parent lifecycle ownership, preventing the same child
   resources from being configured or stopped by multiple application roots.

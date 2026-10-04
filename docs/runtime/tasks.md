@@ -20,7 +20,8 @@ forcefully terminate such a task, so task code must cooperate with cancellation.
 
 Task names are bounded lowercase identifiers (`[a-z][a-z0-9_.-]{0,126}`). Restart policies, numeric
 limits, delays, factories and observers are validated at registration. Retained failure history and
-restart budgets are each capped at 1,000,000; `history_size=0` disables retained history. String,
+restart budgets are each capped at 1,000,000; history retains only the newest configured number of
+failures in chronological order, and `history_size=0` disables retention. String,
 boolean, non-finite or otherwise mismatched values are rejected before application startup, keeping
 task supervision failures out of the worker lifecycle and making Admin task paths unambiguous.
 

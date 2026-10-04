@@ -16,7 +16,7 @@
 import pytest
 
 from orbit.errors import SecurityError
-from orbit.security import Identity, PolicyEngine, Principal
+from orbit.security import Identity, PolicyEngine, Principal, require_roles
 
 
 def principal(*roles: str) -> Principal:
@@ -88,3 +88,23 @@ async def test_policy_engine_does_not_accept_truthy_non_boolean_results():
         await engine.authorize(principal("admin"), [])  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="Policy names"):
         await engine.authorize(principal("admin"), "bad policy")
+
+
+@pytest.mark.asyncio
+async def test_policy_engine_rejects_principal_lookalikes() -> None:
+    """Authorization requires validated Core identity, not a forged roles attribute."""
+
+    class PrincipalLookalike:
+        roles = frozenset({"admin"})
+        identity = Identity(subject="attacker", provider="unverified")
+
+    engine = PolicyEngine()
+    engine.register_roles("admin", {"admin"})
+    spoofed = PrincipalLookalike()
+
+    with pytest.raises(TypeError, match="Principal instance"):
+        await engine.authorize(spoofed, "admin")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="Principal instance"):
+        await engine.require(spoofed, "admin")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="Principal instance"):
+        require_roles(spoofed, {"admin"})  # type: ignore[arg-type]

@@ -170,14 +170,21 @@ def test_serve_gunicorn_uses_uvicorn_worker(target, monkeypatch):
     assert "45" in command
 
 
-def test_serve_reports_missing_host_extra(target, monkeypatch):
+@pytest.mark.parametrize(
+    ("server", "missing_module", "extra"),
+    [
+        ("uvicorn", "uvicorn", "development-server"),
+        ("gunicorn", "uvicorn_worker", "server"),
+    ],
+)
+def test_serve_reports_missing_host_extra(target, monkeypatch, server, missing_module, extra):
     import importlib
 
     cli_module = importlib.import_module("orbit.cli.app")
     real_import_module = cli_module.importlib.import_module
 
     def import_module(name):
-        if name == "uvicorn_worker":
+        if name == missing_module:
             raise ImportError(name)
         return real_import_module(name)
 
@@ -188,10 +195,10 @@ def test_serve_reports_missing_host_extra(target, monkeypatch):
     )
     result = runner.invoke(
         app,
-        ["serve", "orbit_test_target:runtime", "--server", "gunicorn"],
+        ["serve", "orbit_test_target:runtime", "--server", server],
     )
     assert result.exit_code == 1
-    assert "Install orbit-core[server]" in result.output
+    assert f"Install orbit-core[{extra}]" in result.output
 
 
 def test_serve_gunicorn_wires_worker_lifecycle_controls(target, monkeypatch):

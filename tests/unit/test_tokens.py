@@ -166,6 +166,47 @@ def test_revocation_store_expires_entries_and_rejects_capacity():
         store.revoke(second)
 
 
+def test_revocation_store_purges_by_real_expiry_order_across_dst_fold() -> None:
+    """Heap cleanup orders expiry instants, not repeated local wall-clock values."""
+
+    class FallBackTimezone(tzinfo):
+        def utcoffset(self, dt):
+            return timedelta(hours=-4 if dt is None or dt.fold == 0 else -5)
+
+        def dst(self, dt):
+            return timedelta(0)
+
+    zone = FallBackTimezone()
+    issued = datetime(2026, 11, 1, 0, 0, tzinfo=zone)
+    earlier_expiry = Token(
+        token_id="earlier",
+        subject="user-1",
+        issued_at=issued,
+        expires_at=datetime(2026, 11, 1, 1, 10, tzinfo=zone, fold=0),
+    )
+    later_expiry = Token(
+        token_id="later",
+        subject="user-1",
+        issued_at=issued,
+        expires_at=datetime(2026, 11, 1, 1, 15, tzinfo=zone, fold=1),
+    )
+    before_expiry = datetime(2026, 11, 1, 1, 0, tzinfo=zone, fold=0)
+    after_first_expiry = datetime(2026, 11, 1, 1, 12, tzinfo=zone, fold=1)
+    store = TokenRevocationStore(max_entries=2)
+
+    assert store.revoke(later_expiry, now=before_expiry)
+    assert store.revoke(earlier_expiry, now=before_expiry)
+    assert not store.is_revoked("earlier", now=after_first_expiry)
+    assert store.is_revoked("later", now=after_first_expiry)
+    replacement = Token(
+        token_id="replacement",
+        subject="user-1",
+        issued_at=issued,
+        expires_at=datetime(2026, 11, 1, 1, 30, tzinfo=zone, fold=1),
+    )
+    assert store.revoke(replacement, now=after_first_expiry)
+
+
 async def test_bearer_authenticator_verifies_and_maps_principal():
     issued = datetime.now(UTC)
     verified = Token(

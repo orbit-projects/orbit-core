@@ -20,14 +20,25 @@ from pathlib import Path
 
 HEADER = '# Licensed under the Apache License, Version 2.0 (the "License");'
 ROOT = Path(__file__).resolve().parents[1]
+GENERATED_DIRECTORIES = frozenset(
+    {
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+    }
+)
 
 
 def python_files() -> list[Path]:
-    """Return maintained Python files while excluding virtual environments and caches."""
+    """Return maintained Python files, excluding generated environments and caches."""
     return [
-        path
-        for path in ROOT.rglob("*.py")
-        if ".venv" not in path.parts and "__pycache__" not in path.parts
+        path for path in ROOT.rglob("*.py") if not GENERATED_DIRECTORIES.intersection(path.parts)
     ]
 
 

@@ -23,6 +23,10 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_ROOT = ROOT / ".github" / "workflows"
 JOB_HEADER = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 PINNED_ACTION = re.compile(r"^\s*(?:-\s+)?uses:\s+([^@\s]+)@([0-9a-f]{40})\s+#\s+v\S+\s*$")
+CHECKOUT_STEP = re.compile(r"^(\s*)-\s+uses:\s+actions/checkout@")
+PERSIST_CREDENTIALS_FALSE = re.compile(r"^\s+persist-credentials:\s*false\s*$")
+ORBIT_TESTING_REPOSITORY = re.compile(r"^\s+repository:\s*orbit-projects/orbit-testing\s*$")
+ORBIT_TESTING_PATH = re.compile(r"^\s+path:\s*orbit-testing\s*$")
 
 
 def workflow_files() -> list[Path]:
@@ -46,17 +50,73 @@ def job_ranges(lines: list[str]) -> list[tuple[str, int, int]]:
     ]
 
 
+def has_orbit_testing_checkout(lines: list[str]) -> bool:
+    """Return whether one checkout step places orbit-testing beside Core."""
+    for index, line in enumerate(lines):
+        checkout = CHECKOUT_STEP.match(line)
+        if checkout is None:
+            continue
+        step_indent = len(checkout.group(1))
+        step_lines: list[str] = []
+        for following_line in lines[index + 1 :]:
+            if len(following_line) - len(
+                following_line.lstrip()
+            ) == step_indent and following_line.lstrip().startswith("-"):
+                break
+            step_lines.append(following_line)
+        if any(ORBIT_TESTING_REPOSITORY.fullmatch(item) for item in step_lines) and any(
+            ORBIT_TESTING_PATH.fullmatch(item) for item in step_lines
+        ):
+            return True
+    return False
+
+
 def errors_for(path: Path) -> list[str]:
     """Return workflow policy violations for one file."""
     lines = path.read_text(encoding="utf-8").splitlines()
     errors: list[str] = []
+    if not any(line.startswith("permissions:") for line in lines):
+        errors.append(f"{path}: workflow must declare explicit top-level permissions")
+    else:
+        permissions_index = next(
+            index for index, line in enumerate(lines) if line.startswith("permissions:")
+        )
+        inline_permissions = lines[permissions_index].partition(":")[2]
+        if re.search(r""":\s*["']?write["']?\s*[,}]""", inline_permissions):
+            errors.append(
+                f"{path}:{permissions_index + 1}: workflow-level write permissions must be "
+                "scoped to individual jobs"
+            )
+        for line_number, line in enumerate(lines[permissions_index + 1 :], permissions_index + 2):
+            if line.strip() and not line.startswith(" "):
+                break
+            if re.fullmatch(r"  [A-Za-z0-9_-]+:\s*write\s*", line):
+                errors.append(
+                    f"{path}:{line_number}: write permissions must be scoped to individual jobs"
+                )
+
     for line_number, line in enumerate(lines, 1):
         if "uses:" not in line:
+            if line.strip() == "write-all" or re.match(r"^\s*permissions:\s*write-all\s*$", line):
+                errors.append(f"{path}:{line_number}: broad write-all permissions are forbidden")
             continue
         if PINNED_ACTION.fullmatch(line) is None:
             errors.append(
                 f"{path}:{line_number}: actions must use a 40-character SHA and version comment"
             )
+
+        checkout = CHECKOUT_STEP.match(line)
+        if checkout is not None:
+            step_indent = len(checkout.group(1))
+            step_lines: list[str] = []
+            for following_line in lines[line_number:]:
+                if len(following_line) - len(
+                    following_line.lstrip()
+                ) == step_indent and following_line.lstrip().startswith("-"):
+                    break
+                step_lines.append(following_line)
+            if not any(PERSIST_CREDENTIALS_FALSE.fullmatch(step_line) for step_line in step_lines):
+                errors.append(f"{path}:{line_number}: checkout must set persist-credentials: false")
 
     for name, start, end in job_ranges(lines):
         block = lines[start:end]
@@ -65,11 +125,17 @@ def errors_for(path: Path) -> list[str]:
         if not any(line.strip().startswith("timeout-minutes:") for line in block):
             errors.append(f"{path}:{start + 1}: job {name!r} has no timeout-minutes")
 
+    if path.name in {"ci.yml", "release.yml"} and not has_orbit_testing_checkout(lines):
+        errors.append(
+            f"{path}: CI and release workflows must check out orbit-projects/orbit-testing "
+            "at the sibling path orbit-testing for the development test dependency"
+        )
+
     if path.name == "ci.yml":
         text = "\n".join(lines)
         if "fail-fast: false" not in text:
             errors.append(f"{path}: the Python matrix must set fail-fast: false")
-        if "path: coverage.xml" not in text:
+        if re.search(r"^\s+path: (?:[^\s]*/)?coverage\.xml\s*$", text, re.MULTILINE) is None:
             errors.append(f"{path}: the quality job must retain coverage.xml")
     if path.name == "release.yml":
         text = "\n".join(lines)
@@ -97,7 +163,7 @@ def errors_for(path: Path) -> list[str]:
 
 
 def main() -> int:
-    """Validate action pinning, job timeouts, and release workflow invariants."""
+    """Validate least-privilege permissions, checkout credentials, pins, timeouts, and releases."""
     errors = [error for path in workflow_files() for error in errors_for(path)]
     if errors:
         print("GitHub Actions workflow policy violations:", file=sys.stderr)

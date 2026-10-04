@@ -4,10 +4,10 @@ This roadmap turns the [project charter](docs/architecture/project-charter.md) i
 reviewable sequence of work. Dates are intentionally omitted while the project is pre-alpha;
 scope and evidence matter more than calendar promises.
 
-The current development phase is Core-only. Orbit's plugin registry and extension contracts remain
-part of Core because orchestration needs stable extension points, but no database, messaging,
-authentication-provider, cloud, telemetry, or other plugin implementation is being built in this
-phase.
+The current development phase hardens Orbit Core and organizes integrations that already exist
+outside it into separately installable packages. Core's plugin registry and extension contracts
+remain part of Core. This phase does not imply that every package in the requested ecosystem catalog
+has been implemented or released.
 
 ## Current foundation
 
@@ -21,8 +21,17 @@ Orbit Core currently provides the provider-neutral orchestration foundation for:
 - authenticated Admin Panel foundations and a Typer/Rich operator CLI;
 - documentation, tests, type checks, coverage, repository security automation, and release checks.
 
+The current plugin host loads allowlisted Python entry points in-process. A cross-language plugin
+protocol and native/process host are longer-term work, not part of the current implementation.
+
 These are Core contracts and reference implementations. They do not include provider SDKs or claim
-durability, distributed coordination, load-test evidence, or production certification.
+durability, distributed coordination, load-test evidence, or production certification. Optional
+workspace packages currently include `orbit-data`, `orbit-cache`, `orbit-redis`, `orbit-sql`,
+`orbit-sql-postgres`, `orbit-jwt`, `orbit-security`, `orbit-testing`, `orbit-metrics`,
+`orbit-prometheus`, `orbit-resilience`, `orbit-logging`, `orbit-devtools`, `orbit-gateway`,
+`orbit-kafka`, `orbit-migrations`, `orbit-mongo`, `orbit-nats`, `orbit-rabbitmq`, and `orbit-vector`.
+They are local workspaces, not published releases. See the
+[Core/plugin ownership map](docs/architecture/core-and-plugin-ownership.md).
 
 ## Next Core work
 
@@ -39,12 +48,14 @@ durability, distributed coordination, load-test evidence, or production certific
 
 ## Ecosystem work
 
-Build the initial plugin ecosystem in the documented tiers, beginning with database/cache,
-HTTP/gRPC, authentication/secrets, OpenTelemetry, container, Kubernetes, and testing adapters.
-Each plugin must be independently installable, documented, tested against Core contracts, and clear
-about its provider, credential, durability, and operational assumptions.
+Continue organizing the implementations that exist, then build the requested plugin catalog
+incrementally. Do not create empty repositories to imply progress. Each implemented package must be
+independently installable, documented, tested against its capability/Core contracts, and clear
+about its provider, credential, durability, and operational assumptions. The requested catalog
+names and package status are tracked in the ownership map; names do not imply that a contract or
+implementation already exists.
 
-After the first-party foundations, support community adapters for messaging, storage, cloud
+After the Orbit-maintained foundations, support community adapters for messaging, storage, cloud
 providers, service discovery, observability systems, and developer workflows. Plugin quality must
 not be measured only by whether it imports: lifecycle rollback, readiness, security, redaction,
 upgrade, migration, and failure behavior are part of the contract.

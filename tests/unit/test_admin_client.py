@@ -14,6 +14,7 @@
 import asyncio
 import threading
 from collections.abc import Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -40,9 +41,11 @@ class FakeTransport:
     def __init__(self, response: AdminHTTPResponse) -> None:
         self.response = response
         self.calls: list[tuple[str, str, dict[str, str]]] = []
+        self.bodies: list[Mapping[str, object] | None] = []
 
     async def request(self, method, path, *, headers, body=None):
         self.calls.append((method, path, dict(headers)))
+        self.bodies.append(body)
         return self.response
 
 
@@ -64,6 +67,15 @@ class SyncTransport:
     def request(self, method, path, *, headers, body=None):
         self.thread_id = threading.get_ident()
         return self.response
+
+
+class FailingSyncTransport:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def request(self, method, path, *, headers, body=None):
+        self.calls += 1
+        raise RuntimeError("transport failed")
 
 
 class BlockingSyncTransport:
@@ -109,6 +121,16 @@ async def test_admin_client_authenticates_and_restricts_paths() -> None:
 
 
 @pytest.mark.asyncio
+async def test_admin_client_refreshes_health_through_the_typed_transport() -> None:
+    transport = FakeTransport(AdminHTTPResponse(status=200, body={"refreshed": True}))
+    client = AdminClient(transport, token="token")
+
+    assert await client.refresh_health() == {"refreshed": True}
+    assert transport.calls[0][0:2] == ("POST", "/admin/health/refresh")
+    assert transport.bodies == [{}]
+
+
+@pytest.mark.asyncio
 async def test_admin_client_exposes_safe_remote_errors() -> None:
     transport = FakeTransport(AdminHTTPResponse(status=403, body={"code": "security.forbidden"}))
     client = AdminClient(transport, token="token")
@@ -117,6 +139,19 @@ async def test_admin_client_exposes_safe_remote_errors() -> None:
     assert error.value.status == 403
     with pytest.raises(ValueError):
         await client.service_action("bad/name", "restart")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [300, 302, 304, 399])
+async def test_admin_client_rejects_non_success_redirect_statuses(status: int) -> None:
+    """Redirect and cache statuses cannot masquerade as completed admin operations."""
+    transport = FakeTransport(AdminHTTPResponse(status=status, body={}))
+    client = AdminClient(transport, token="token")
+
+    with pytest.raises(AdminClientError, match="admin.unexpected-status") as error:
+        await client.inspect("health")
+
+    assert error.value.status == status
 
 
 @pytest.mark.asyncio
@@ -133,7 +168,7 @@ def test_admin_client_error_validates_public_contract() -> None:
     with pytest.raises(ValueError):
         AdminClientError(99, "admin.failure")
     with pytest.raises(ValueError):
-        AdminClientError(399, "admin.failure")
+        AdminClientError(299, "admin.failure")
     with pytest.raises(ValueError):
         AdminClientError(500, "unsafe code")
 
@@ -159,6 +194,8 @@ def test_admin_http_response_rejects_unbounded_or_unsafe_body_keys() -> None:
         AdminHTTPResponse(status=200, body={1: "coerced-key"})  # type: ignore[dict-item]
     with pytest.raises(ValueError, match="2,048"):
         AdminHTTPResponse(status=200, body=_MisreportingResponseBody())  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="must be mappings"):
+        AdminHTTPResponse(status=200, body=[])  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -183,6 +220,66 @@ async def test_admin_client_runs_sync_transport_off_loop() -> None:
         AdminClient(transport, token="token", max_sync_workers=0)
     with pytest.raises(ValueError):
         AdminClient(transport, token="token", timeout=float("nan"))
+
+
+@pytest.mark.asyncio
+async def test_admin_client_propagates_sync_transport_failures_and_releases_slot() -> None:
+    transport = FailingSyncTransport()
+    client = AdminClient(transport, token="token", max_sync_workers=1)
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="transport failed"):
+            await client.inspect("health")
+    assert transport.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_admin_client_rejects_non_response_transport_results() -> None:
+    class InvalidAsyncTransport:
+        async def request(self, method, path, *, headers, body=None):
+            return {"status": 200}  # type: ignore[return-value]
+
+    class InvalidSyncTransport:
+        def request(self, method, path, *, headers, body=None):
+            return {"status": 200}  # type: ignore[return-value]
+
+    for transport in (InvalidAsyncTransport(), InvalidSyncTransport()):
+        client = AdminClient(transport, token="token")
+        with pytest.raises(TypeError, match="must return AdminHTTPResponse"):
+            await client.inspect("health")
+
+
+def test_admin_client_rejects_reuse_from_a_different_event_loop() -> None:
+    client = AdminClient(FakeTransport(AdminHTTPResponse(status=200)), token="token")
+
+    assert asyncio.run(client.inspect("health")) == {}
+    with pytest.raises(RuntimeError, match="event loop of their first request"):
+        asyncio.run(client.inspect("health"))
+
+
+def test_admin_client_atomically_binds_when_two_event_loops_race() -> None:
+    client = AdminClient(FakeTransport(AdminHTTPResponse(status=200)), token="token")
+    start = threading.Barrier(3)
+
+    def inspect() -> Mapping[str, object]:
+        start.wait()
+        return asyncio.run(client.inspect("health"))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        requests = [executor.submit(inspect) for _ in range(2)]
+        start.wait()
+        results: list[Mapping[str, object]] = []
+        errors: list[RuntimeError] = []
+        for request in requests:
+            try:
+                results.append(request.result())
+            except RuntimeError as error:
+                errors.append(error)
+
+    assert results == [{}]
+    assert len(errors) == 1
+    assert isinstance(errors[0], RuntimeError)
+    assert "event loop of their first request" in str(errors[0])
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, StrictStr, field_validator
 
-from orbit._limits import is_aware_datetime
+from orbit._limits import datetime_utc_microseconds
 from orbit.security.roles import validate_role_collection
 from orbit.security.tokens import Token
 
@@ -128,16 +128,15 @@ class TokenValidationPolicy(BaseModel):
         if not isinstance(token, Token):
             raise TypeError("Token validation requires a Token instance.")
         current = datetime.now(UTC) if now is None else now
-        if not is_aware_datetime(current):
-            raise ValueError("Token comparison timestamps must include timezone information.")
-        try:
-            expires_at = token.expires_at + self.clock_skew
-            issued_at = token.issued_at - self.clock_skew
-        except OverflowError as exc:
-            raise ValueError("Token timestamps exceed the validation range.") from exc
-        if expires_at <= current:
+        expires_at = datetime_utc_microseconds(token.expires_at)
+        issued_at = datetime_utc_microseconds(token.issued_at)
+        current_at = datetime_utc_microseconds(current)
+        skew = (
+            self.clock_skew.days * 86_400 + self.clock_skew.seconds
+        ) * 1_000_000 + self.clock_skew.microseconds
+        if expires_at + skew <= current_at:
             raise ValueError("Token is expired.")
-        if issued_at > current:
+        if issued_at - skew > current_at:
             raise ValueError("Token is not valid yet.")
         claims: dict[str, Any] = token.claims
         if self.issuer is not None and claims.get("iss") != self.issuer:

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import copy
+import heapq
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -100,7 +101,12 @@ _DELETE = object()
 
 
 class StateNamespace:
-    """An isolated in-memory namespace suitable for ephemeral Core state and adapters."""
+    """An isolated in-memory namespace suitable for ephemeral Core state and adapters.
+
+    Live entries are keyed in a dictionary; TTL deadlines are indexed in a min-heap so
+    ordinary operations do not scan the full namespace. Refreshes leave stale heap records
+    behind temporarily, tagged with unique tokens and periodically compacted.
+    """
 
     def __init__(self, name: str, *, max_entries: int = 10_000) -> None:
         if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{0,62}", name):
@@ -114,6 +120,11 @@ class StateNamespace:
         self._name = name
         self._max_entries = max_entries
         self._entries: dict[str, StateEntry] = {}
+        # Expiry records are ordered by deadline. Tokens make records for refreshed or
+        # deleted keys harmless, while periodic compaction bounds stale-record growth.
+        self._expiry_heap: list[tuple[float, int, str]] = []
+        self._expiry_tokens: dict[str, int] = {}
+        self._next_expiry_token = 0
         self._revision = 0
         self._lock = RLock()
 
@@ -164,8 +175,13 @@ class StateNamespace:
                 next_revision,
                 None if ttl is None else monotonic() + ttl,
             )
+            expiry_token = self._prepare_expiry(entry.expires_at)
+            if expiry_token is not None and entry.expires_at is not None:
+                heapq.heappush(self._expiry_heap, (entry.expires_at, expiry_token, key))
             self._revision = next_revision
             self._entries[key] = entry
+            self._publish_expiry(key, expiry_token)
+            self._compact_expiry_heap()
             return next_revision
 
     def delete(self, key: str, *, expected_version: int | None = None) -> bool:
@@ -182,7 +198,9 @@ class StateNamespace:
             if current is None:
                 return False
             del self._entries[key]
+            self._expiry_tokens.pop(key, None)
             self._revision += 1
+            self._compact_expiry_heap()
             return True
 
     def snapshot(self) -> tuple[StateEntry, ...]:
@@ -208,14 +226,42 @@ class StateNamespace:
     def _purge(self) -> None:
         now = monotonic()
         expired = False
-        for key, entry in tuple(self._entries.items()):
-            if entry.expires_at is not None and entry.expires_at <= now:
-                del self._entries[key]
-                expired = True
+        while self._expiry_heap and self._expiry_heap[0][0] <= now:
+            _, token, key = heapq.heappop(self._expiry_heap)
+            if self._expiry_tokens.get(key) != token:
+                continue
+            self._expiry_tokens.pop(key, None)
+            self._entries.pop(key, None)
+            expired = True
         if expired:
             # Expiration is an observable state mutation. Advancing the revision prevents
             # transactions created before cleanup from committing over a changed snapshot.
             self._revision += 1
+        self._compact_expiry_heap()
+
+    def _prepare_expiry(self, expires_at: float | None) -> int | None:
+        """Reserve a never-reused index token for an expiring replacement."""
+        if expires_at is None:
+            return None
+        self._next_expiry_token += 1
+        return self._next_expiry_token
+
+    def _publish_expiry(self, key: str, token: int | None) -> None:
+        """Publish or clear a key's active expiry token after its entry is stored."""
+        if token is None:
+            self._expiry_tokens.pop(key, None)
+        else:
+            self._expiry_tokens[key] = token
+
+    def _compact_expiry_heap(self) -> None:
+        """Discard superseded deadlines occasionally to keep the index bounded."""
+        if len(self._expiry_heap) > max(64, 2 * len(self._expiry_tokens)):
+            self._expiry_heap = [
+                (entry.expires_at, self._expiry_tokens[key], key)
+                for key, entry in self._entries.items()
+                if entry.expires_at is not None and key in self._expiry_tokens
+            ]
+            heapq.heapify(self._expiry_heap)
 
     @staticmethod
     def _validate_key(key: str) -> str:
@@ -243,7 +289,7 @@ class NamespaceTransaction:
         return self._namespace.get(key, default)
 
     def set(self, key: str, value: Any, *, ttl: float | None = None) -> NamespaceTransaction:
-        """Stage a value replacement with an optional positive TTL."""
+        """Stage a value replacement; its optional TTL starts when the transaction commits."""
         self._ensure_open()
         _validate_ttl(ttl)
         normalized_key = self._namespace._validate_key(key)
@@ -251,7 +297,7 @@ class NamespaceTransaction:
             raise RuntimeError("State transaction change capacity reached.")
         self._changes[normalized_key] = (
             copy.deepcopy(value),
-            None if ttl is None else monotonic() + ttl,
+            ttl,
         )
         return self
 
@@ -289,6 +335,7 @@ class NamespaceTransaction:
                 revision = namespace._revision + 1
                 deletions: list[str] = []
                 replacements: dict[str, StateEntry] = {}
+                expiry_tokens: dict[str, int | None] = {}
                 # Construct every replacement before publishing the new revision. StateEntry
                 # detaches arbitrary caller values and may fail during deepcopy; no namespace
                 # mutation is allowed until every staged entry has been prepared successfully.
@@ -296,12 +343,28 @@ class NamespaceTransaction:
                     if change is _DELETE:
                         deletions.append(key)
                     elif isinstance(change, tuple):
-                        value, expires_at = change
+                        value, ttl = change
+                        expires_at = None if ttl is None else monotonic() + ttl
                         replacements[key] = StateEntry(key, value, revision, expires_at)
+                        expiry_tokens[key] = namespace._prepare_expiry(expires_at)
+                # Push index entries before publishing values. Tokens are never reused, so
+                # partially pushed records from an allocation failure cannot expire a later
+                # value for the same key.
+                for key, entry in replacements.items():
+                    token = expiry_tokens[key]
+                    if token is not None and entry.expires_at is not None:
+                        heapq.heappush(
+                            namespace._expiry_heap,
+                            (entry.expires_at, token, key),
+                        )
                 namespace._revision = revision
                 for key in deletions:
                     namespace._entries.pop(key, None)
+                    namespace._expiry_tokens.pop(key, None)
                 namespace._entries.update(replacements)
+                for key, token in expiry_tokens.items():
+                    namespace._publish_expiry(key, token)
+                namespace._compact_expiry_heap()
                 return revision
         finally:
             # A failed commit cannot be safely retried after its optimistic base was checked.

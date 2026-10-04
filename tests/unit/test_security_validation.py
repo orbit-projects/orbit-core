@@ -15,28 +15,73 @@ from datetime import UTC, datetime, timedelta, tzinfo
 
 import pytest
 
-from orbit.security import JsonWebKey, JsonWebKeySet, PyJWTVerifier, Token, TokenValidationPolicy
+from orbit.security import JsonWebKey, JsonWebKeySet, Token, TokenValidationPolicy
 
 
 @pytest.mark.parametrize(
-    ("issued_at", "expires_at"),
+    ("issued_at", "expires_at", "now"),
     [
-        (datetime.min.replace(tzinfo=UTC), datetime.min.replace(tzinfo=UTC) + timedelta(days=1)),
-        (datetime.max.replace(tzinfo=UTC) - timedelta(days=1), datetime.max.replace(tzinfo=UTC)),
+        (
+            datetime.min.replace(tzinfo=UTC),
+            datetime.min.replace(tzinfo=UTC) + timedelta(days=1),
+            datetime.min.replace(tzinfo=UTC) + timedelta(hours=1),
+        ),
+        (
+            datetime.max.replace(tzinfo=UTC) - timedelta(days=1),
+            datetime.max.replace(tzinfo=UTC),
+            datetime.max.replace(tzinfo=UTC) - timedelta(hours=1),
+        ),
     ],
 )
-def test_token_policy_fails_closed_on_timestamp_arithmetic_overflow(
-    issued_at: datetime, expires_at: datetime
+def test_token_policy_compares_boundary_timestamps_without_arithmetic_overflow(
+    issued_at: datetime, expires_at: datetime, now: datetime
 ) -> None:
-    """Clock-skew arithmetic must not leak datetime overflow exceptions."""
+    """Exact instant comparisons remain valid at both datetime representation limits."""
     candidate = Token(
         token_id="edge-token",
         subject="user-1",
         issued_at=issued_at,
         expires_at=expires_at,
     )
-    with pytest.raises(ValueError, match="validation range"):
-        TokenValidationPolicy().validate(candidate, now=datetime(2026, 1, 1, tzinfo=UTC))
+    policy = TokenValidationPolicy(clock_skew=timedelta(0))
+    assert policy.validate(candidate, now=now) is candidate
+
+
+class _FallBackTimezone(tzinfo):
+    """Minimal DST-like zone whose repeated hour has two distinct UTC offsets."""
+
+    def utcoffset(self, dt):
+        return timedelta(hours=-4 if dt is None or dt.fold == 0 else -5)
+
+    def dst(self, dt):
+        return timedelta(0)
+
+
+def test_security_expiry_compares_real_instants_across_repeated_local_hour() -> None:
+    """Token policy and JWKS freshness must honor ``fold`` for a repeated local hour."""
+    zone = _FallBackTimezone()
+    issued = datetime(2026, 11, 1, 1, 30, tzinfo=zone, fold=0)  # 05:30 UTC
+    current = datetime(2026, 11, 1, 1, 10, tzinfo=zone, fold=1)  # 06:10 UTC
+    expires = datetime(2026, 11, 1, 1, 15, tzinfo=zone, fold=1)  # 06:15 UTC
+    verified = Token(
+        token_id="fold-token",
+        subject="user",
+        issued_at=issued,
+        expires_at=expires,
+    )
+
+    assert not verified.is_expired(current)
+    assert (
+        TokenValidationPolicy(clock_skew=timedelta(0)).validate(verified, now=current) is verified
+    )
+    snapshot = JsonWebKeySet(
+        keys=(JsonWebKey(kid="fold-key", kty="RSA"),),
+        fetched_at=issued,
+        expires_at=expires,
+    )
+    assert snapshot.usable("fold-key", now=current) is not None
+    after_expiry = datetime(2026, 11, 1, 1, 20, tzinfo=zone, fold=1)
+    assert snapshot.usable("fold-key", now=after_expiry) is None
 
 
 def token(**claims: object) -> Token:
@@ -220,23 +265,3 @@ def test_validation_policy_bounds_trust_metadata_and_clock_skew() -> None:
         TokenValidationPolicy(required_scopes=frozenset(str(index) for index in range(1_025)))
     with pytest.raises(ValueError, match="clock_skew"):
         TokenValidationPolicy(clock_skew=timedelta(days=1, seconds=1))
-
-
-def test_pyjwt_verifier_requires_explicit_safe_configuration() -> None:
-    with pytest.raises(ValueError, match="none"):
-        PyJWTVerifier("secret", algorithms=("none",))
-    with pytest.raises(ValueError, match="leeway"):
-        PyJWTVerifier("secret", leeway=-1)
-    with pytest.raises(ValueError, match="leeway"):
-        PyJWTVerifier("secret", leeway=float("inf"))
-    with pytest.raises(ValueError, match="leeway"):
-        PyJWTVerifier("secret", leeway="1")  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="audience"):
-        PyJWTVerifier("secret", audience=42)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="issuer"):
-        PyJWTVerifier("secret", issuer=42)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="algorithms"):
-        PyJWTVerifier("secret", algorithms=("HS256", 1))  # type: ignore[arg-type]
-    verifier = PyJWTVerifier("secret")
-    with pytest.raises(ValueError, match="invalid"):
-        verifier.verify("x" * 16_385)

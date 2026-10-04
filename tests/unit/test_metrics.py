@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Verify bounded metrics registration, snapshots, exposition, and diagnostics export."""
+"""Verify bounded metrics registration, snapshots, and diagnostics export."""
 
 from collections.abc import Iterator, Mapping
 
@@ -111,8 +111,6 @@ def test_metric_snapshots_validate_exporter_boundaries() -> None:
             count=2,
             buckets={1.0: 2, 2.0: 1},
         )
-    with pytest.raises(ValueError, match="reserved"):
-        MetricSnapshot("metric", "histogram", {"le": "1"}, 1, count=1, buckets={1.0: 1})
     with pytest.raises(ValueError, match="at most"):
         MetricSnapshot("metric", "gauge", _MisreportingMapping(33, "value"), 1)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="at most"):
@@ -154,8 +152,6 @@ def test_metrics_registry_rejects_invalid_values_and_definitions():
         metrics.counter("non_string_label", labels=(1,))  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         metrics.histogram("too_many_buckets", buckets=tuple(float(i) for i in range(1, 102)))
-    with pytest.raises(ValueError, match="reserved"):
-        metrics.histogram("reserved_label", labels=("le",))
     with pytest.raises(ValueError):
         counter.inc("1")  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="strings"):
@@ -190,16 +186,13 @@ def test_metrics_registry_rejects_overflowing_and_unrepresentable_values() -> No
         histogram.observe(10**1000)
 
 
-def test_metrics_registry_renders_prometheus_exposition():
+def test_metric_snapshots_remain_exporter_neutral():
     metrics = MetricsRegistry()
     metrics.counter("requests_total", labels=("method",)).inc(method="GET")
-    metrics.histogram("latency", buckets=(1.0,)).observe(0.5)
-    exposition = metrics.prometheus()
-    assert "# TYPE requests_total counter" in exposition
-    assert "# TYPE latency histogram" in exposition
-    assert 'requests_total{method="GET"} 1.0' in exposition
-    assert 'latency_bucket{le="1.0"} 1' in exposition
-    assert "latency_count 1" in exposition
+    metrics.histogram("latency", labels=("le",), buckets=(1.0,)).observe(0.5, le="custom")
+    snapshots = metrics.snapshots()
+    assert {snapshot.name for snapshot in snapshots} == {"requests_total", "latency"}
+    assert next(item for item in snapshots if item.name == "latency").labels == {"le": "custom"}
 
 
 def test_diagnostics_export_is_json_and_validates_indent() -> None:

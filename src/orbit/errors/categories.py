@@ -21,6 +21,7 @@ class ErrorCategory(StrEnum):
 
     CONFIGURATION = "configuration"
     CONTAINER = "container"
+    DATABASE = "database"
     LIFECYCLE = "lifecycle"
     PLUGIN = "plugin"
     ROUTING = "routing"

@@ -111,6 +111,9 @@ class AdminApplication:
             try:
                 await self._application.restart_task(name)
             except KeyError:
+                self._application.record_admin_audit(
+                    "task.restart", target=name, success=False, error_code="tasks.not-found"
+                )
                 return Response.json({"code": "tasks.not-found"}, status=404)
             except Exception as exc:
                 self._application.record_admin_audit(
@@ -144,6 +147,9 @@ class AdminApplication:
                 else:
                     await self._application.reload_service(name)
             except KeyError:
+                self._application.record_admin_audit(
+                    f"service.{action}", target=name, success=False, error_code="services.not-found"
+                )
                 return Response.json({"code": "services.not-found"}, status=404)
             except Exception as exc:
                 self._application.record_admin_audit(

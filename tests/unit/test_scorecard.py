@@ -63,4 +63,10 @@ def test_scorecard_rejects_human_summary_drift() -> None:
     data["areas"]["packaging_release"]["earned"] = 6
     errors = module.documented_scorecard_errors(data)
     assert any("completion.md score summary" in error for error in errors)
-    assert any("HANDOFF.md score summary" in error for error in errors)
+    assert not any("HANDOFF.md" in error for error in errors)
+
+
+def test_stabilization_metrics_are_linked_and_separate_from_release_score() -> None:
+    module = _scorecard_module()
+    data = module.load_scorecard()
+    assert module.documented_scorecard_errors(data) == []

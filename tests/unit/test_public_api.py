@@ -14,6 +14,7 @@
 """Regression checks for documented focused-package imports and composition limits."""
 
 from importlib import import_module
+from pathlib import Path
 
 import pytest
 
@@ -25,19 +26,18 @@ _PUBLIC_PACKAGES = (
     "orbit.cli",
     "orbit.config",
     "orbit.container",
+    "orbit.database",
     "orbit.diagnostics",
     "orbit.errors",
     "orbit.events",
     "orbit.health",
     "orbit.lifecycle",
     "orbit.plugins",
-    "orbit.reliability",
     "orbit.routing",
     "orbit.runtime",
     "orbit.security",
     "orbit.services",
     "orbit.state",
-    "orbit.testing",
     "orbit.types",
 )
 _EXPECTED_PUBLIC_EXPORTS = {
@@ -59,17 +59,20 @@ _EXPECTED_PUBLIC_EXPORTS = {
     },
     "orbit.asgi": {
         "ASGIApplication",
-        "CORSMiddleware",
-        "GZipMiddleware",
         "MAX_BODY_BYTES",
         "MAX_HEADER_BYTES",
         "MAX_HEADER_COUNT",
+        "MAX_PATH_BYTES",
         "MAX_QUERY_BYTES",
+        "Headers",
+        "Message",
         "Middleware",
         "NextHandler",
-        "RateLimitMiddleware",
+        "Receive",
         "Request",
         "Response",
+        "Scope",
+        "Send",
     },
     "orbit.application": {"Application", "ApplicationBuilder", "ApplicationSummary"},
     "orbit.cli": {"app"},
@@ -79,7 +82,9 @@ _EXPECTED_PUBLIC_EXPORTS = {
         "ConfigChange",
         "ConfigObserver",
         "ConfigSnapshot",
-        "ConfigWatcher",
+        "ConfigurationWatcher",
+        "MAX_CONFIG_FILE_BYTES",
+        "MAX_CONFIG_PREFIX_LENGTH",
         "SecretManager",
         "SecretReference",
         "SecretValue",
@@ -95,6 +100,15 @@ _EXPECTED_PUBLIC_EXPORTS = {
         "ProviderResolution",
         "Scope",
     },
+    "orbit.database": {
+        "SQLDatabase",
+        "SQLExecution",
+        "SQLParameters",
+        "SQLRow",
+        "SQLTransaction",
+        "SQLValue",
+        "SQLiteDatabase",
+    },
     "orbit.diagnostics": {
         "Counter",
         "DiagnosticSnapshot",
@@ -102,7 +116,6 @@ _EXPECTED_PUBLIC_EXPORTS = {
         "Gauge",
         "Histogram",
         "InMemoryTracer",
-        "JSONFormatter",
         "LatencyBucket",
         "MetricSnapshot",
         "MetricsRegistry",
@@ -115,6 +128,7 @@ _EXPECTED_PUBLIC_EXPORTS = {
     "orbit.errors": {
         "ConfigurationError",
         "ContainerError",
+        "DatabaseError",
         "ErrorCategory",
         "ErrorResponse",
         "ErrorSeverity",
@@ -149,19 +163,6 @@ _EXPECTED_PUBLIC_EXPORTS = {
         "PluginRegistry",
         "discover_plugins",
     },
-    "orbit.reliability": {
-        "Bulkhead",
-        "CircuitBreaker",
-        "CircuitOpenError",
-        "CircuitState",
-        "Deadline",
-        "DefaultFailureClassifier",
-        "FailureClassifier",
-        "FailureKind",
-        "RetryPolicy",
-        "resilient_call",
-        "retry",
-    },
     "orbit.routing": {"Route", "RouteGroup", "RouteMetadata", "Router"},
     "orbit.runtime": {
         "HostServer",
@@ -177,6 +178,8 @@ _EXPECTED_PUBLIC_EXPORTS = {
     "orbit.security": {
         "Authenticator",
         "BearerAuthenticator",
+        "BasicAuthenticator",
+        "BasicCredential",
         "Identity",
         "JsonWebKey",
         "JsonWebKeySet",
@@ -188,7 +191,6 @@ _EXPECTED_PUBLIC_EXPORTS = {
         "OAuthTokenResponse",
         "PolicyEngine",
         "Principal",
-        "PyJWTVerifier",
         "RateLimitResult",
         "RateLimiter",
         "Token",
@@ -213,7 +215,6 @@ _EXPECTED_PUBLIC_EXPORTS = {
         "StateStore",
         "StateTransaction",
     },
-    "orbit.testing": {"TestClient", "TestResponse"},
     "orbit.types": {
         "ApplicationId",
         "ConfigurationId",
@@ -239,6 +240,17 @@ _EXPECTED_PUBLIC_EXPORTS = {
 
 def test_documented_packages_have_resolvable_public_exports() -> None:
     """Every documented import boundary exposes a unique, non-private ``__all__``."""
+    reference = Path(__file__).parents[2] / "docs" / "reference.md"
+    documented_packages = {
+        line.split("|")[1].strip().strip("`")
+        for line in reference.read_text(encoding="utf-8").splitlines()
+        if line.startswith("| `")
+    }
+    assert documented_packages == set(_EXPECTED_PUBLIC_EXPORTS), (
+        "API reference package rows and the explicit public-export manifest must match"
+    )
+    assert set(_PUBLIC_PACKAGES) == set(_EXPECTED_PUBLIC_EXPORTS)
+
     for package_name in _PUBLIC_PACKAGES:
         package = import_module(package_name)
         exports = getattr(package, "__all__", None)

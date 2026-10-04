@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import heapq
 from datetime import UTC, datetime
 from threading import RLock
 from typing import Any
@@ -22,7 +23,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
 
 from orbit._immutability import freeze_mapping
-from orbit._limits import is_aware_datetime
+from orbit._limits import datetime_utc_microseconds
 from orbit.security.claims import validate_claims
 from orbit.security.roles import validate_role_collection
 
@@ -83,18 +84,14 @@ class Token(BaseModel):
     @model_validator(mode="after")
     def validate_window(self) -> Token:
         """Require timezone-aware timestamps with a strictly positive validity window."""
-        if not is_aware_datetime(self.issued_at) or not is_aware_datetime(self.expires_at):
-            raise ValueError("Token timestamps must include timezone information.")
-        if self.expires_at <= self.issued_at:
+        if datetime_utc_microseconds(self.expires_at) <= datetime_utc_microseconds(self.issued_at):
             raise ValueError("Token expiry must be after issuance.")
         return self
 
     def is_expired(self, now: datetime | None = None) -> bool:
         """Return whether the token has reached its expiry instant."""
         current = datetime.now(UTC) if now is None else now
-        if not is_aware_datetime(current):
-            raise ValueError("Token comparison timestamps must include timezone information.")
-        return current >= self.expires_at
+        return datetime_utc_microseconds(current) >= datetime_utc_microseconds(self.expires_at)
 
 
 class TokenRevocationStore:
@@ -108,7 +105,8 @@ class TokenRevocationStore:
         ):
             raise ValueError("max_entries must be a positive integer no greater than 1,000,000.")
         self._max_entries = max_entries
-        self._revoked: dict[str, datetime] = {}
+        self._revoked: dict[str, int] = {}
+        self._expiry_heap: list[tuple[int, str]] = []
         self._lock = RLock()
 
     def revoke(self, token: Token, *, now: datetime | None = None) -> bool:
@@ -116,17 +114,18 @@ class TokenRevocationStore:
         if not isinstance(token, Token):
             raise TypeError("Token revocation requires a Token instance.")
         current = datetime.now(UTC) if now is None else now
-        if not is_aware_datetime(current):
-            raise ValueError("Token comparison timestamps must include timezone information.")
         with self._lock:
-            self._purge(current)
+            current_key = datetime_utc_microseconds(current)
+            self._purge(current_key)
             if token.is_expired(current):
                 return False
             if token.token_id in self._revoked:
                 return False
             if len(self._revoked) >= self._max_entries:
                 raise RuntimeError("Token revocation capacity reached.")
-            self._revoked[token.token_id] = token.expires_at
+            expiry_key = datetime_utc_microseconds(token.expires_at)
+            self._revoked[token.token_id] = expiry_key
+            heapq.heappush(self._expiry_heap, (expiry_key, token.token_id))
             return True
 
     def is_revoked(self, token_id: str, *, now: datetime | None = None) -> bool:
@@ -138,23 +137,23 @@ class TokenRevocationStore:
         ):
             raise ValueError("Token IDs must be nonempty and at most 255 characters.")
         current = datetime.now(UTC) if now is None else now
-        if not is_aware_datetime(current):
-            raise ValueError("Token comparison timestamps must include timezone information.")
         with self._lock:
-            self._purge(current)
+            self._purge(datetime_utc_microseconds(current))
             return token_id in self._revoked
 
     @property
     def size(self) -> int:
         """Return the current number of retained non-expired revocations."""
         with self._lock:
-            self._purge(datetime.now(UTC))
+            self._purge(datetime_utc_microseconds(datetime.now(UTC)))
             return len(self._revoked)
 
-    def _purge(self, now: datetime) -> None:
-        expired = [token_id for token_id, expires_at in self._revoked.items() if expires_at <= now]
-        for token_id in expired:
-            del self._revoked[token_id]
+    def _purge(self, now_key: int) -> None:
+        """Remove only expired heap entries, avoiding a full scan on each token lookup."""
+        while self._expiry_heap and self._expiry_heap[0][0] <= now_key:
+            expires_key, token_id = heapq.heappop(self._expiry_heap)
+            if self._revoked.get(token_id) == expires_key:
+                del self._revoked[token_id]
 
 
 __all__ = ["Token", "TokenRevocationStore"]

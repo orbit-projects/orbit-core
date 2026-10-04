@@ -25,7 +25,11 @@ If a change establishes or revises an architectural convention, include an ADR.
 
 ## Development environment
 
-Orbit supports Python 3.11 through 3.14. Use the committed lockfile for local development:
+Orbit supports Python 3.11 through 3.14. Core's development dependency group uses the separately
+maintained `orbit-testing` package through the sibling path `../orbit-testing`; check out both
+repositories side by side before syncing. The test package is not a runtime dependency and is not
+bundled into the Core wheel. Hosted CI checks it out into the same sibling path. Then use the
+committed lockfile:
 
 ```bash
 python -m pip install uv==0.12.13

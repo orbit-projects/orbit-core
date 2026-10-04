@@ -640,10 +640,18 @@ dev = [
     { name = "ruff" },
     { name = "uv" },
 ]
+development-server = [
+    { name = "uvicorn" },
+]
 server = [
     { name = "gunicorn" },
     { name = "uvicorn" },
     { name = "uvicorn-worker" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "orbit-testing" },
 ]
 
 [package.metadata]
@@ -662,10 +670,32 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8,<1" },
     { name = "typer", specifier = ">=0.12,<1" },
     { name = "uv", marker = "extra == 'dev'", specifier = "==0.12.13" },
+    { name = "uvicorn", marker = "extra == 'development-server'", specifier = ">=0.34,<1" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.34,<1" },
     { name = "uvicorn-worker", marker = "extra == 'server'", specifier = ">=0.4,<1" },
 ]
-provides-extras = ["dev", "server"]
+provides-extras = ["dev", "development-server", "server"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "orbit-testing", editable = "../orbit-testing" }]
+
+[[package]]
+name = "orbit-testing"
+version = "0.1.0a1"
+source = { editable = "../orbit-testing" }
+dependencies = [
+    { name = "orbit-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13,<2" },
+    { name = "orbit-core", specifier = ">=0.1.0a1,<0.2" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8,<10" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24,<2" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8,<1" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "packageurl-python"

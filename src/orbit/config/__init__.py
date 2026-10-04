@@ -14,10 +14,15 @@
 """Typed Core configuration APIs."""
 
 from orbit.config.config import Config, ConfigChange, ConfigObserver, ConfigSnapshot
-from orbit.config.loader import load_application_config, load_config
+from orbit.config.contracts import ConfigurationWatcher
+from orbit.config.loader import (
+    MAX_CONFIG_FILE_BYTES,
+    MAX_CONFIG_PREFIX_LENGTH,
+    load_application_config,
+    load_config,
+)
 from orbit.config.models import ApplicationConfig
 from orbit.config.secrets import SecretManager, SecretReference, SecretValue
-from orbit.config.watcher import ConfigWatcher
 
 __all__ = [
     "ApplicationConfig",
@@ -25,7 +30,9 @@ __all__ = [
     "ConfigChange",
     "ConfigObserver",
     "ConfigSnapshot",
-    "ConfigWatcher",
+    "ConfigurationWatcher",
+    "MAX_CONFIG_FILE_BYTES",
+    "MAX_CONFIG_PREFIX_LENGTH",
     "SecretManager",
     "SecretReference",
     "SecretValue",

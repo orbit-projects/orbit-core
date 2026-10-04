@@ -14,19 +14,19 @@
 """Real ASGI lifespan, plugin composition and operational failure behavior."""
 
 import asyncio
-import json
-import logging
+import base64
 from contextlib import asynccontextmanager
 
+from orbit_testing import TestClient
 from pydantic import BaseModel
 
 from orbit import Application, ApplicationConfig
 from orbit.asgi import ASGIApplication, Response
 from orbit.container import Scope
-from orbit.diagnostics import JSONFormatter
 from orbit.plugins import Plugin, PluginMetadata
+from orbit.runtime import Runtime
 from orbit.runtime.context import current_request_id
-from orbit.testing import TestClient
+from orbit.security import BasicAuthenticator, BasicCredential
 
 
 async def test_plugin_routes_are_composed_before_runtime_freezes():
@@ -57,7 +57,7 @@ async def test_openapi_endpoint_exposes_composed_routes():
     assert response.json()["paths"]["/hello/{name}"]["get"]["operationId"] == "hello"
 
 
-async def test_metrics_endpoint_exposes_request_metrics():
+async def test_metrics_endpoint_is_not_installed_by_core():
     app = Application(ApplicationConfig(name="metrics"))
 
     @app.router.route("/", name="root")
@@ -65,15 +65,46 @@ async def test_metrics_endpoint_exposes_request_metrics():
         return Response.text("ok")
 
     async with TestClient(ASGIApplication(app)) as client:
-        await client.request("GET", "/")
         response = await client.request("GET", "/metrics")
-    assert response.status == 200
-    assert response.headers["content-type"] == "text/plain; version=0.0.4; charset=utf-8"
-    assert "orbit_http_requests_total" in response.body.decode()
-    exposition = response.body.decode()
-    assert "orbit_services_registered" in exposition
-    assert "orbit_tasks_registered" in exposition
-    assert "orbit_events_published" in exposition
+    assert response.status == 404
+
+
+async def test_basic_auth_adds_challenge_to_protected_anonymous_response():
+    app = Application(ApplicationConfig(name="basic-auth-challenge"))
+
+    @app.router.route("/private", name="private", roles=frozenset({"ops"}))
+    async def private(request):
+        return Response.text("private")
+
+    authenticator = BasicAuthenticator([BasicCredential.create("operator", "secret")])
+    async with TestClient(ASGIApplication(app, authenticator=authenticator)) as client:
+        response = await client.request("GET", "/private")
+
+    assert response.status == 401
+    assert response.headers["www-authenticate"] == authenticator.challenge
+    assert response.json()["code"] == "security.forbidden"
+
+
+async def test_basic_auth_protects_builtin_admin_with_explicit_role():
+    """Runtime wires Core Basic Auth into Admin and enforces its role and TLS requirements."""
+    app = Application(ApplicationConfig(name="basic-auth-admin", admin_enabled=True))
+    credential = BasicCredential.create(
+        "operator", "secret", roles=("orbit.admin.read", "orbit.admin.write")
+    )
+    authenticator = BasicAuthenticator([credential])
+    authorization = "Basic " + base64.b64encode(b"operator:secret").decode("ascii")
+
+    async with TestClient(Runtime(app, authenticator=authenticator)) as client:
+        anonymous = await client.request("GET", "https://orbit.test/admin/state")
+        authenticated = await client.request(
+            "GET",
+            "https://orbit.test/admin/state",
+            headers={"authorization": authorization},
+        )
+
+    assert anonymous.status == 401
+    assert anonymous.headers["www-authenticate"] == authenticator.challenge
+    assert authenticated.status == 200
 
 
 async def test_route_models_validate_request_and_response():
@@ -212,17 +243,15 @@ async def test_concurrent_admission_reuses_capacity_and_closes_failed_scopes():
     assert closed == 3
 
 
-async def test_request_context_is_isolated_and_logged():
+async def test_request_context_is_isolated():
     app = Application(ApplicationConfig(name="correlation"))
 
     @app.router.route("/", method="GET", name="root")
     async def route(request):
         await asyncio.sleep(0)
-        record = logging.LogRecord("worker", logging.INFO, "", 0, "handled", (), None)
-        data = json.loads(JSONFormatter().format(record))
-        assert data["request_id"] == str(request.request_id) == str(current_request_id())
-        assert data["application"] == "correlation"
-        return Response.json(data)
+        request_id = current_request_id()
+        assert request_id == request.request_id
+        return Response.json({"request_id": str(request_id)})
 
     async with TestClient(ASGIApplication(app)) as client:
         first, second = await asyncio.gather(client.request("GET", "/"), client.request("GET", "/"))

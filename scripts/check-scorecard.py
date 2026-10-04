@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCORECARD = ROOT / "docs" / "development" / "completion-scorecard.toml"
 COMPLETION_DOC = ROOT / "docs" / "development" / "completion.md"
 HANDOFF_DOC = ROOT / "HANDOFF.md"
+STABILIZATION_DOC = ROOT / "docs" / "development" / "stabilization.md"
+DEVELOPMENT_README = ROOT / "docs" / "development" / "README.md"
 EXPECTED_AREAS = (
     ("core_contracts", "Core contracts and scope", 25),
     ("reliability_operations", "Reliability and operational behavior", 20),
@@ -150,7 +152,7 @@ def scorecard_result(data: dict[str, Any]) -> tuple[int, bool]:
 
 
 def documented_scorecard_errors(data: dict[str, Any]) -> list[str]:
-    """Return errors when the human-readable score summaries drift from the TOML source."""
+    """Check that release-score summaries and stabilization tracking stay distinct."""
     score, _ = scorecard_result(data)
     areas = data["areas"]
     completion_summary = (
@@ -170,13 +172,24 @@ def documented_scorecard_errors(data: dict[str, Any]) -> list[str]:
     try:
         completion_text = " ".join(COMPLETION_DOC.read_text(encoding="utf-8").split())
         handoff_text = " ".join(HANDOFF_DOC.read_text(encoding="utf-8").split())
+        stabilization_text = " ".join(STABILIZATION_DOC.read_text(encoding="utf-8").split())
+        development_readme = " ".join(DEVELOPMENT_README.read_text(encoding="utf-8").split())
     except OSError as exc:
         return [f"unable to read scorecard summary documents: {exc}"]
     if " ".join(completion_summary.split()) not in completion_text:
         errors.append("completion.md score summary does not match completion-scorecard.toml")
-    handoff_summary = f"The current evidence score is **{score}/100**."
-    if handoff_summary not in handoff_text:
-        errors.append("HANDOFF.md score summary does not match completion-scorecard.toml")
+    for name, content in (
+        ("HANDOFF.md", handoff_text),
+        ("completion.md", completion_text),
+        ("development README", development_readme),
+    ):
+        if "stabilization.md" not in content:
+            errors.append(f"{name} must link to stabilization.md")
+    if (
+        "Report local hardening checkpoints and external release gates separately"
+        not in stabilization_text
+    ):
+        errors.append("stabilization.md must define separate progress reporting")
     return errors
 
 

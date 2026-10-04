@@ -20,7 +20,7 @@ from typing import Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
 
 from orbit._immutability import freeze_mapping, validate_mapping
-from orbit._limits import is_aware_datetime
+from orbit._limits import datetime_utc_microseconds
 
 
 class JsonWebKey(BaseModel):
@@ -67,9 +67,7 @@ class JsonWebKeySet(BaseModel):
     @model_validator(mode="after")
     def validate_snapshot(self) -> JsonWebKeySet:
         """Require timezone-aware ordered timestamps and unique key identifiers."""
-        if not is_aware_datetime(self.fetched_at) or not is_aware_datetime(self.expires_at):
-            raise ValueError("JWKS timestamps must include timezone information.")
-        if self.expires_at <= self.fetched_at:
+        if datetime_utc_microseconds(self.expires_at) <= datetime_utc_microseconds(self.fetched_at):
             raise ValueError("JWKS expiry must be after fetch time.")
         key_ids = [key.key_id for key in self.keys]
         if len(key_ids) != len(set(key_ids)):
@@ -85,9 +83,7 @@ class JsonWebKeySet(BaseModel):
         ):
             raise ValueError("JWKS key IDs must be nonempty strings of at most 255 characters.")
         current = datetime.now(UTC) if now is None else now
-        if not is_aware_datetime(current):
-            raise ValueError("JWKS comparison timestamps must include timezone information.")
-        if current >= self.expires_at:
+        if datetime_utc_microseconds(current) >= datetime_utc_microseconds(self.expires_at):
             return None
         return next((key for key in self.keys if key.key_id == key_id), None)
 

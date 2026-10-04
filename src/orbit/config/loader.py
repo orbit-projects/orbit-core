@@ -23,14 +23,14 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from orbit._limits import _MAX_CONFIG_FILE_BYTES
 from orbit.config.models import ApplicationConfig
 from orbit.errors import ConfigurationError, ErrorCategory, OrbitProblem
 
 T = TypeVar("T", bound=BaseModel)
 _MAX_INPUT_VALUES = 100_000
 _MAX_INPUT_DEPTH = 64
-_MAX_PREFIX_LENGTH = 255
+MAX_CONFIG_PREFIX_LENGTH = 255
+MAX_CONFIG_FILE_BYTES = 64 * 1024 * 1024
 
 
 def _copy_input_value(
@@ -151,11 +151,11 @@ def load_config(
             not isinstance(model, type)
             or not issubclass(model, BaseModel)
             or not isinstance(prefix, str)
-            or not 1 <= len(prefix) <= _MAX_PREFIX_LENGTH
+            or not 1 <= len(prefix) <= MAX_CONFIG_PREFIX_LENGTH
             or any(ord(character) < 32 or ord(character) == 127 for character in prefix)
             or isinstance(max_file_bytes, bool)
             or not isinstance(max_file_bytes, int)
-            or not 1 <= max_file_bytes <= _MAX_CONFIG_FILE_BYTES
+            or not 1 <= max_file_bytes <= MAX_CONFIG_FILE_BYTES
             or (values is not None and not isinstance(values, Mapping))
             or (environment is not None and not isinstance(environment, Mapping))
             or (file is not None and not isinstance(file, Path))

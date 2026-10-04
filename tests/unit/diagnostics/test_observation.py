@@ -13,17 +13,13 @@
 # limitations under the License.
 """Bounded operational telemetry, observer isolation and safe structured logs."""
 
-import json
-import logging
-
 import pytest
 from pydantic import ValidationError
 
 from orbit import Application, ApplicationConfig
-from orbit.diagnostics import Diagnostics, DiagnosticSnapshot, JSONFormatter, RequestRecord
+from orbit.diagnostics import Diagnostics, DiagnosticSnapshot, RequestRecord
 from orbit.diagnostics.inspection import inspect_composition
 from orbit.plugins import Plugin, PluginMetadata
-from orbit.runtime.context import bind_correlation_id, bind_span_id, bind_trace_id
 
 REQUEST_ID = "00000000-0000-0000-0000-000000000001"
 
@@ -139,36 +135,6 @@ def test_request_diagnostic_numbers_are_strict(kwargs):
             status=kwargs.get("status", 200),
             duration_seconds=kwargs.get("duration_seconds", 0.1),
         )
-
-
-def test_json_logging_excludes_exception_message_and_unapproved_extras():
-    error = ValueError("credential=private")
-    record = logging.LogRecord(
-        "test", logging.ERROR, "", 0, "operation failed", (), (ValueError, error, None)
-    )
-    record.authorization = "private"
-    result = JSONFormatter().format(record)
-    assert "private" not in result
-    assert json.loads(result)["exception_type"] == "ValueError"
-    assert json.loads(result)["request_id"] is None
-
-
-def test_json_logging_includes_bound_trace_context():
-    correlation = bind_correlation_id("corr-1")
-    trace = bind_trace_id("a" * 32)
-    span = bind_span_id("b" * 16)
-    try:
-        record = logging.LogRecord("test", logging.INFO, "", 0, "ok", (), None)
-        payload = json.loads(JSONFormatter().format(record))
-        assert payload["correlation_id"] == "corr-1"
-        assert payload["trace_id"] == "a" * 32
-        assert payload["span_id"] == "b" * 16
-    finally:
-        from orbit.runtime.context import reset_correlation_id, reset_span_id, reset_trace_id
-
-        reset_span_id(span)
-        reset_trace_id(trace)
-        reset_correlation_id(correlation)
 
 
 def test_negative_history_size_is_rejected():

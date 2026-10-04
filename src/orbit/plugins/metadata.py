@@ -29,11 +29,12 @@ CORE_API_VERSION: Final[str] = "0.1"
 
 
 class PluginMetadata(BaseModel):
-    """Validated metadata shared by Python and native plugin bindings.
+    """Validated metadata consumed by Orbit's in-process Python plugin runtime.
 
     The model is the Core-side contract boundary: registry validation still checks API
     compatibility and graph availability, but malformed names, dependency declarations, and
-    capabilities are rejected before a plugin can enter composition.
+    capabilities are rejected before a plugin can enter composition. This Pydantic model is not a
+    language-neutral wire protocol; Core currently loads Python entry points only.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", validate_default=True)

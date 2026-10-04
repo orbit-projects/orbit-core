@@ -111,9 +111,9 @@ optional asynchronous cleanup at construction. Statuses 204 and 304 are required
 or stream, so invalid HTTP framing fails before response headers are sent.
 `Response.text()` requires a string before UTF-8 encoding, while `Response.json()` rejects values
 that the strict JSON serializer cannot represent.
-`orbit.testing.TestClient` returns a validated `TestResponse` with Core `Headers` and bytes, so
-directly constructed test results observe the same status, header, and body contract as captured
-ASGI responses.
+The separate `orbit-testing` package provides `orbit_testing.TestClient` and validated
+`TestResponse` values using Core's public `Headers` contract. This keeps test-only code out of the
+Core distribution while sharing the same status, header, and body validation.
 HEAD responses retain the GET content length while suppressing the body. The final response
 boundary canonicalizes the method too, so overload, draining, and other early responses cannot
 emit a body when an ASGI server supplies a lowercase method token.
@@ -141,9 +141,11 @@ Request diagnostics retain only a bounded HTTP method token. If a malformed scop
 before method validation, the diagnostic record uses `INVALID` rather than copying untrusted
 control characters or arbitrary text into logs and inspection exports.
 
-`RateLimitMiddleware` applies the bounded Core token bucket to HTTP requests and emits
-`x-ratelimit-limit`, `x-ratelimit-remaining`, and `retry-after` headers. Its default key is the
-validated client host; deployments may provide an explicit bounded identity or tenant key.
+General request-level rate limiting is optional middleware in `orbit-security`. It uses Core's
+bounded in-process token bucket and emits `x-ratelimit-limit`, `x-ratelimit-remaining`, and
+`retry-after` headers. Its default key is the validated client host; deployments may provide an
+explicit bounded identity or tenant key. Each worker has a separate bucket, so this is not a
+distributed quota. Core retains its local limiter only for protecting built-in Admin operations.
 
 ## Routing and middleware
 
@@ -199,16 +201,12 @@ Invalid forwarded addresses and schemes are discarded. Host authorities and ASGI
 identities also reject interface-scoped IPv6 literals, so Python-specific zone identifiers cannot
 enter proxy trust evaluation.
 
-`GZipMiddleware` is opt-in and compresses only buffered text or JSON-like responses above its
-configured size threshold. It honors `Accept-Encoding` quality values, adds `Content-Encoding`
-and merges `Vary: Accept-Encoding` with existing cache dimensions, and never compresses streams,
-empty status responses, or already encoded bodies. Repeated `Accept-Encoding` fields are combined
-as one list; duplicate gzip or wildcard entries, and duplicate quality parameters, are treated as
-ambiguous and disable compression. Quality values use the HTTP qvalue grammar (`0` through `1`
-with at most three fractional digits); malformed values and case-insensitive duplicate `q` names
-disable compression.
-Negotiation also caps the combined `Accept-Encoding` text at 64 KiB and the token count at 1,024
-before matching, so a client cannot turn compression negotiation into unbounded parsing work.
+Cross-origin policy and response compression are optional middleware in the separate
+`orbit-gateway` distribution. Install it with `pip install orbit-gateway` and attach
+`CORSMiddleware` or `GZipMiddleware` explicitly through `ASGIApplication.add_middleware()`.
+Core provides only the middleware contract and ASGI registration point; applications that do not
+need these HTTP policies do not carry their implementation in `orbit-core`. See the separate
+`orbit-gateway` package README for exact CORS and gzip policy behavior.
 
 `Request.cookies` parses a bounded Cookie header into a detached mapping and rejects duplicate
 cookie names instead of selecting the last parser value. `Response.with_cookie`
@@ -238,19 +236,7 @@ also rejects repeated `Forwarded`, `X-Forwarded-For`, or `X-Forwarded-Proto` fie
 contain a validated comma-separated proxy chain. Interface-scoped IPv6 literals are rejected in
 forwarded `for` values; only address literals without a zone identifier can affect client identity.
 
-`CORSMiddleware` applies an explicit origin allowlist and validates preflight methods and headers.
-Its origins, methods, header names and credential flag are validated at construction, so malformed
-policy values fail during composition instead of changing browser-facing behavior at runtime. Duplicate
-`Origin` or preflight policy headers are treated as ambiguous and fail closed rather than selecting
-the first value. Empty authority ports, query or fragment delimiters, and control characters are
-not accepted in configured origins. `Vary` tokens are deduplicated using HTTP's case-insensitive
-field-name semantics.
-
-`RateLimitMiddleware` validates its key provider during composition. The provider must return a
-bounded string key; Core preserves callable objects even when their boolean value is false.
-Wildcard origins cannot be combined with credentials. Allowed responses include `Vary: Origin`,
-and rejected preflights return a structured 403 without reflecting the untrusted origin.
-Configured origin, method, and header policies are bounded to 1,024 entries with bounded text
-values. Request origins and preflight method/header lists are validated and bounded before policy
-matching, so untrusted browser metadata cannot create disproportionate matching work or an
-unbounded token collection.
+`orbit-security.RateLimitMiddleware` validates its key provider during construction. The provider
+must return a bounded string key; the middleware preserves callable objects even when their boolean
+value is false. Allowed responses include `Vary: Origin`, and rejected requests return a structured
+429 without reflecting attacker-controlled policy input.

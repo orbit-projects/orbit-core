@@ -29,9 +29,11 @@ explicitly. The host owns sockets, HTTP parsing, TLS and worker processes.
 
 The admin panel is opt-in and authenticated. Inspection requires orbit.admin.read;
 mutations require orbit.admin.write and a non-cookie request authorization mechanism.
-Provider code is trusted code: discovery requires an explicit allowlist. Native plugins
-participate through the same Python contract via a binding; Core does not load arbitrary
-native libraries or invent a cross-language ABI.
+Provider code is trusted code: discovery requires an explicit allowlist. The implemented plugin
+host is Python-only and imports Python entry points into the application process. Rust, C++, Go,
+and JavaScript/TypeScript plugins remain a project goal; no binding, process host, or cross-language
+ABI is implemented by this ADR or by the current Core release. Any such extension needs a separate,
+versioned boundary and security review; Core does not load arbitrary native libraries.
 
 ## Consequences
 No provider integrations are required for the Core tests. Health, plugin and event

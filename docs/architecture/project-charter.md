@@ -15,6 +15,14 @@ Orbit is intentionally not a framework that ships every database, broker, cloud 
 provider. Core supplies the contracts and orchestration rules; independently installable plugins
 provide optional capabilities and provider-specific implementations.
 
+Optional plugins and adapters are separate packages: they are not vendored into the Core source,
+bundled in the `orbit-core` distribution, or installed as Core dependencies. An application opts
+into each capability by adding the corresponding package. Core may include only small, deliberately
+scoped baselines that are broadly useful to the framework itself—for example its stdlib SQLite
+implementation and opt-in static-user Basic Auth—alongside the provider-neutral contracts required
+to integrate capabilities. Those exceptions do not make server databases, identity providers,
+telemetry exporters, or advanced security built-in.
+
 ## One Core Framework
 
 Orbit Core is one foundational framework unit. It is not decomposed into Core plugins. The Core
@@ -28,13 +36,18 @@ boundary owns the architecture that every Orbit application needs:
 - plugin registration, compatibility, and lifecycle integration;
 - the runtime, CLI foundation, and administrative foundations.
 
-The dependency direction is deliberately one-way:
+The architectural layers are separately installable; each package depends only on the contracts
+it implements or consumes:
 
 ```text
-application -> orbit-core -> capability adapter -> provider SDK
+application
+├── orbit-core (orchestration and shared contracts)
+├── capability package (uniform application-facing API)
+└── provider adapter (implements the capability and Core contracts)
+    └── provider SDK
 ```
 
-Database, messaging, telemetry, cloud, storage, and identity-provider implementations belong
+Database server, messaging, telemetry, cloud, storage, and identity-provider implementations belong
 outside Core. A Core reference implementation may be in-memory and process-local for tests, but it
 must never be described as durable or distributed merely because it satisfies a contract.
 
@@ -45,13 +58,15 @@ Every Orbit application is built around the same Core graph and exposes three re
 ```text
 Orbit application
 ├── Web runtime
-├── Admin Panel
+├── Admin foundation
 └── CLI
 ```
 
-The Web runtime serves application routes and lifecycle-owned health endpoints. The Admin Panel
-inspects and, where authorized, controls the same application, service, plugin, configuration,
-health, event, and diagnostic state. The CLI delegates to the same Core models and contracts for
+The Web runtime serves application routes and lifecycle-owned health endpoints. Core's Admin
+foundation provides a protected HTML overview and, where authorized, inspection and operational
+endpoints over the same application, service, plugin, configuration, health, event, and diagnostic
+state. It is not the planned general CRUD and analytics dashboard (`orbit-admin`), which remains a
+separate, unimplemented optional package. The CLI delegates to the same Core models and contracts for
 local composition, validation, hosting, inspection, and operations. None of these surfaces should
 maintain a parallel application model.
 
@@ -67,7 +82,8 @@ The current repository implements this hosting model. See the [ASGI guide](../ru
 [deployment runbook](../deployment/README.md), and [hosting ADR](adr/0003-unified-hosting.md)
 for the supported development and production commands. The hosting server owns sockets, worker
 processes, and signals; Orbit owns application composition, lifecycle state, resource cleanup, and
-request orchestration.
+request orchestration. The [native ASGI ADR](adr/0005-native-asgi-boundary.md) records the decision
+to retain Orbit's own web boundary, superseding the earlier FastAPI wording in the project prompt.
 
 ## Type safety and contracts
 
@@ -77,10 +93,11 @@ and typed configuration, state, events, plugin metadata, and service contracts.
 
 Stable contracts are preferred over concrete implementation coupling. Important contract families
 include Application, Service, Provider, Container, Plugin, Lifecycle, Router, State, Identity,
-Security, Authentication, and Event. A plugin may be written in Python, Rust, C++, Go, or
-JavaScript/TypeScript when its boundary can be represented safely through a supported contract or
-adapter protocol. The implementation language is a plugin decision; the Core contract remains the
-integration boundary.
+Security, Authentication, and Event. The current Core plugin host supports in-process Python
+entry points. Python, Rust, C++, Go, and JavaScript/TypeScript implementations are ecosystem goals;
+non-Python plugins require a separately specified and versioned host, ABI, or wire adapter protocol,
+which is not implemented yet. The implementation language is a plugin decision only once a
+supported boundary exists; the Core contract remains the integration boundary.
 
 ## Service-oriented orchestration
 
@@ -102,7 +119,9 @@ implementations to share a database client, broker SDK, cloud SDK, or global ser
 
 ## Plugin ecosystem
 
-Plugins are optional, independently versioned capabilities. The initial ecosystem priorities are:
+Plugins and adapters are optional, independently versioned packages; none is implicitly part of the
+Core install. A capability package may define a uniform API, and a provider adapter may implement
+that API. The initial ecosystem priorities are:
 
 | Tier | Initial capability families |
 | --- | --- |
@@ -110,6 +129,10 @@ Plugins are optional, independently versioned capabilities. The initial ecosyste
 | 2 — Core ecosystem | Kafka, NATS, RabbitMQ, GraphQL, WebSockets, Prometheus, S3, service discovery, configuration integrations, Sentry |
 | 3 — cloud integrations | AWS, GCP, Azure, Cloudflare |
 | 4 — developer ecosystem | Git, GitHub, CI/CD, registries, Grafana, Loki, Jaeger, Tempo, Alertmanager |
+
+The planned `orbit-admin` package would extend Core's existing administrative foundations with a
+general dashboard/CRUD and analytics experience. It is not present in the current workspace; the
+Core Admin API and overview remain usable without that optional package.
 
 These tiers describe ecosystem priority and maturity goals, not dependencies of Core and not a
 restriction on community extensions. Plugins own provider SDKs, credentials, migrations, network
@@ -123,8 +146,10 @@ shutdown, readiness/liveness probes, structured diagnostics, metrics, tracing, a
 state. Core remains cloud-provider-neutral and does not pretend that one worker's in-memory state
 is a distributed system.
 
-Core provides security and observability contracts. Authentication mechanisms, token providers,
-secret managers, telemetry exporters, and cloud identity systems are plugins. Administrative
+Core provides security and observability contracts plus a small static-user Basic Auth baseline.
+That baseline is opt-in and is not an account-management system. Advanced authentication
+mechanisms, token-provider integrations, secret managers, telemetry exporters, and cloud identity
+systems are separately installed plugins or adapters. Administrative
 operations must remain authenticated, authorized, auditable, non-cacheable where sensitive, and
 safe to expose only through an explicitly configured deployment boundary.
 

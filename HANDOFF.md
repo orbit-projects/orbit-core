@@ -7,10 +7,19 @@ runtime and cross-cutting contracts, but it is not certified for commercial prod
 local and uncommitted; it has not been pushed to GitHub. Preserve the user's root `app.py` state if
 present and do not reset or clean the worktree without explicit instruction.
 
-Progress is measured by the repository scorecard in `docs/development/completion.md`, not by
-informal estimates. The current evidence score is **87/100**. The local Core validation gate
-passes; hosted CI/security results, deployment pressure testing, and hosted release provenance
-remain unverified and are not counted.
+Hardening progress is tracked as separate binary local and external checkpoints in
+[`docs/development/stabilization.md`](docs/development/stabilization.md); do not report a blended
+percentage. The weighted release-readiness scorecard in
+[`docs/development/completion.md`](docs/development/completion.md) is a separate gate. The local
+Core validation gate passes; hosted CI/security results, deployment pressure testing, and hosted
+release provenance remain unverified.
+
+The current Core CI and release workflows also check out `orbit-projects/orbit-testing` at `main`.
+That repository is not publicly accessible at the configured URL, and the local sibling workspace has
+no Git remote. Therefore hosted checks cannot be considered runnable until that package repository
+is available to the workflow token at the expected path, or the maintainer supplies its correct
+repository and access arrangement. Keep `orbit-testing` separate; do not copy it back into Core to
+hide this prerequisite.
 
 ## Hosting decision
 
@@ -26,9 +35,12 @@ Reverse proxy/load balancer -> Gunicorn -> uvicorn_worker.UvicornWorker -> Orbit
 uv run orbit serve app:runtime --server gunicorn --workers 4
 ```
 
-The project also supports direct Uvicorn, `orbit run`, and `orbit start`. The project deliberately
-will not add Starlette, Litestar, or another web framework. Because Orbit owns HTTP/routing code,
-future work must emphasize protocol security, fuzzing, load testing, and maintenance discipline.
+The project also supports direct Uvicorn, `orbit run`, and `orbit start`. The accepted architecture
+decision is to keep Orbit's native ASGI and routing boundary; do not add FastAPI, Starlette,
+Litestar, or another web framework. Because Orbit owns HTTP/routing code, future work must emphasize
+protocol security, fuzzing, load testing, and maintenance discipline. See
+[ADR 0005](docs/architecture/adr/0005-native-asgi-boundary.md), which resolves the earlier FastAPI
+wording in the project prompt.
 
 ## Implemented areas
 
@@ -53,14 +65,34 @@ future work must emphasize protocol security, fuzzing, load testing, and mainten
   compression, strict CORS, canonical path and method validation, trusted proxy handling, RFC 7239
   `Forwarded`, and optional tracing spans.
 - Routing groups, middleware, route API-version metadata, OpenAPI generation, and shared error schema.
-- Security policies, bearer authentication contracts, revocation, rate limiting, OAuth/OIDC/JWKS
-  contracts, token validation policies, and an optional strict `PyJWTVerifier` helper (PyJWT remains
-  an application deployment dependency).
+- Security policies, opt-in static-user Basic Auth, bearer authentication contracts, revocation,
+  Admin rate limiting, OAuth/OIDC/JWKS contracts, and token validation policies. The separately
+  installable `orbit-jwt` repository owns `PyJWTVerifier` and the PyJWT dependency.
+  General request-level rate limiting now lives in the separately installable `orbit-security`
+  package and reuses Core's bounded in-process limiter; Core no longer exports that middleware.
 - Structured Core mappings are detached and recursively immutable with explicit cycle, nesting, and
   container-work limits; direct HTTP request models enforce aggregate header, body, and query caps.
-- Admin API, audit records, service/task operations, remote `AdminClient`, metrics with bounded
-  label values/cardinality, Prometheus exposition, structured logging, tracing, diagnostics export, and
-  reliability primitives with explicit expired-parent deadline errors.
+- Admin API, audit records, service/task operations, remote `AdminClient`, bounded Core metric
+  instruments/snapshots, structured logging, tracing, and diagnostics export. Prometheus exposition
+  and its `/metrics` route live in the separate `orbit-metrics` and `orbit-prometheus` repositories;
+  application-level resilience utilities live in `orbit-resilience`.
+- Optional caching is split into `orbit-cache` (provider-neutral async bytes-cache contract) and
+  `orbit-redis` (redis-py adapter plus an opt-in Core plugin that registers the capability and owns
+  client shutdown). Neither package is bundled into Core; Redis is not installed unless the
+  application chooses the adapter.
+- The SQL capability publishes a shared container key; `orbit-sql-postgres` offers both explicit
+  adapter-registry use and a plugin that lazily registers a PostgreSQL pool as a Core-managed
+  resource. Its setup phase performs no database I/O.
+- The packaging-boundary regression checks the full requested optional-package catalog and
+  statically rejects known provider-SDK imports from Core. The in-process ASGI test client now lives
+  in the separately installable `orbit-testing` repository and depends on Core's public ASGI
+  contracts; Core's tests import it as `orbit_testing`.
+- All 14 checked-out optional sibling wheels plus the Core wheel were installed together in a fresh
+  Python 3.14 environment. The current Core suite and all 14 package suites passed **1,274 tests**
+  combined, with two default-skipped host tests. Import-origin checks resolved all 15 Orbit modules
+  to `site-packages`, and dependency consistency passed across 45 distributions. Separately, the
+  Core suite passes 1,028 tests on Python 3.11–3.14 through tox; details are in the
+  [completion report](docs/development/completion.md).
 - Remote admin transports have bounded synchronous worker and asynchronous operation budgets; timed
   out calls retain their capacity until the underlying adapter actually returns.
 - CLI inspection/health/diagnostics commands, bounded `health-watch`, plus `serve`, `run`, and
@@ -89,35 +121,28 @@ The latest full validation passed:
 git diff --check
 ```
 
-Latest test count: **1108 passed, 2 skipped** (the opt-in hosting tests are skipped unless enabled). Full coverage validation now remains above the declared gate at **91.96%** on Python 3.11, satisfying the
-declared 90% gate. This is test coverage evidence only; production load, multi-process, proxy, and
-security certification work is still outstanding.
+The current Core suite passed **1,028 tests with two default-skipped opt-in host tests** on Python
+3.11, 3.12, 3.13, and 3.14 through tox. A fresh Python 3.14 wheel environment ran Core and all 14
+installed optional-package suites: **1,274 tests passed**, with two opt-in host tests skipped.
+Wheel-origin and dependency checks passed. The two real-process Uvicorn/Gunicorn worker tests passed
+separately on each interpreter in prior local validation. Ruff, strict mypy, documentation,
+workflow, scorecard, model-boundary, license, lockfile, and package-integrity checks passed. This is
+local validation, not hosted CI, live provider interoperability, production load validation, or
+release provenance; details and older evidence remain in the [completion report](docs/development/completion.md).
 
-The opt-in two-worker Gunicorn smoke test has passed with `uvicorn_worker.UvicornWorker` under
-Python 3.11, 3.12, 3.13, and 3.14: each worker generation served repeated 64-request concurrent bursts,
-SIGHUP replacement workers served the route, an in-flight request completed during graceful
-termination, every worker generation reached service cleanup, and the master terminated cleanly.
-The suite also terminates one replacement worker deliberately and verifies Gunicorn starts a
-replacement that serves traffic.
-The same opt-in process suite starts the supported `orbit serve --server uvicorn` development
-path on each interpreter,
-serves repeated 16-request concurrent bursts, rejects a stalled body and conflicting framing at the
-real socket boundary, verifies valid and malformed trusted-proxy identity through a forwarding hop
-in both direct Uvicorn and Gunicorn workers, runs eight additional concurrent 32-request rounds plus
-a bounded thirty-second request soak, and verifies SIGINT-driven lifespan cleanup.
-Enable it with `ORBIT_RUN_HOSTING_TESTS=1 uv run --no-sync pytest -q tests/integration/test_gunicorn_host.py`.
+The real-process tests exercise Uvicorn development hosting and the two-worker Gunicorn/
+`uvicorn_worker.UvicornWorker` production topology, including graceful worker replacement and
+shutdown. Enable them with
+`ORBIT_RUN_HOSTING_TESTS=1 uv run --no-sync pytest -q tests/integration/test_gunicorn_host.py`.
+The completion log records the detailed scenarios and historical test runs so this handoff remains
+focused on the latest candidate rather than repeating stale counts.
 
-Additional local compatibility validation now covers Python 3.12.14, 3.13.15, and 3.14.7: each
-interpreter passes all **1108 behavioral tests** with the two opt-in hosting tests excluded from the
-default run, and the enabled Gunicorn/Uvicorn process tests pass. Hosted GitHub Actions results
-are still required before release claims are made.
-
-Release checks also pass locally: the source distribution and wheel build successfully, the
-package integrity verifier confirms their contents and metadata, the license-header verifier is
-clean, `pip-audit --skip-editable` reports no known vulnerabilities, a 58-component CycloneDX SBOM
-is valid, and SHA-256 checksums for both distributions verify. Configuration inputs are also
-detached during bounded validation so mutable custom mappings cannot change between validation and
-composition. Hosted provenance attestation remains a separate release gate.
+The 2026-10-04 source distribution and wheel passed the package-integrity checker. The latest
+combined-environment `pip-audit` found no known vulnerabilities in **28 auditable third-party
+distributions** and skipped **15 unpublished Orbit distributions**; those local packages were not
+covered by the advisory scan. `uv pip check` verified all 43 installed distributions were
+compatible. Earlier SBOM and checksum results are historical local artifact evidence, not hosted
+release provenance; signing, attestation, and publication remain open gates.
 
 The public repository status was checked on 2026-09-28 through GitHub's public API. CI, CodeQL, and
 OpenSSF Scorecard completed successfully on public `main` commit
@@ -131,27 +156,29 @@ so hosted artifact upload and build-provenance attestation remain unverified.
 
 ## Highest-priority remaining work
 
-1. Verify the hosted GitHub evidence: run the pull-request CI, CodeQL, and Scorecard workflows;
-   configure the documented `main-protection` ruleset using the exact reported check names; and run
-   the release workflow to confirm the SBOM, checksums, artifact upload, and provenance attestation.
-2. Continue deployment-level validation of the custom HTTP/router layer with protocol fuzzing,
-   load testing, proxy behavior, and real provider adapters. These are outside the deterministic
-   Core unit/integration suite and cannot be certified by local tests alone.
-3. Add real Gunicorn multi-worker, signal, graceful reload, reverse-proxy, TLS, HTTP/2, load, stress,
-   soak, race, and failure-injection validation.
-4. Integrate and lock a maintained JWT/JWKS dependency when package resolution is available; the
-   current `PyJWTVerifier` helper is opt-in and provider-specific identity systems remain external.
-5. Expand CLI watch/log/diagnostic streaming and remote admin operations.
-6. Add adapter contract suites and production-like pressure tests for database, cache, messaging,
-   storage, authentication, telemetry, and distributed-state adapters.
-7. Finish release/supply-chain verification: hosted Python 3.12-3.13 CI evidence, CodeQL, Scorecard,
-   vulnerability response, signed packages/releases, provenance, SBOM, PyPI, and rollback procedures.
+1. Approve the first stable public-API baseline: review exported APIs and compatibility guarantees,
+   record accepted exceptions/deprecations, and authorize the version/tag. This is a maintainer
+   decision, not something local tests can decide.
+2. Make the `orbit-testing` source available to the Core workflows, then verify hosted CI, CodeQL,
+   and OpenSSF Scorecard on the release commit; confirm code-owner access, secret scanning, branch
+   protection, and required status contexts in the protected-main ruleset.
+3. Exercise the selected production host and actual reverse proxy with representative sustained
+   load, TLS/HTTP2 configuration, slow clients, protocol fuzzing, upstream failures, cancellation,
+   and worker termination. The existing multi-worker and direct-Uvicorn process suite is a smoke
+   test, not deployment certification.
+4. Run the protected release workflow and verify artifact upload, SBOM, checksums, Sigstore
+   signatures, build provenance, publication, and rollback evidence.
+
+Additional database and messaging adapters, expanded CLI streaming, and cloud-specific operations
+remain separate ecosystem or roadmap work; they are not prerequisites for declaring the
+provider-neutral Core boundary stable. The initial `orbit-cache → orbit-redis` capability/adapter/
+plugin chain is implemented locally but is not published or certified as stable.
 
 ## Working rules
 
 - Do not claim Orbit Core is complete or commercially production-ready based only on unit tests.
 - Do not replace the Gunicorn + Uvicorn-worker hosting decision.
-- Do not introduce Starlette/Litestar unless the user explicitly reverses the decision.
+- Keep the native ASGI boundary; do not add FastAPI, Starlette, Litestar, or another web framework
+  unless the user explicitly changes this decision.
 - Keep docs and tests aligned with every implementation change.
-- Do not push or commit without the user's explicit request; local commits are the safest checkpoint
-  if the user is switching accounts.
+- Do not commit, push, create or merge PRs, or change GitHub settings; the user handles those steps.

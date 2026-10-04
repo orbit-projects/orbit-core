@@ -21,7 +21,7 @@ import pytest
 
 from orbit import Application, ApplicationConfig
 from orbit.errors import PluginError
-from orbit.plugins import CORE_API_VERSION, Plugin, PluginMetadata, PluginRegistry
+from orbit.plugins import CORE_API_VERSION, Plugin, PluginContract, PluginMetadata, PluginRegistry
 from orbit.plugins.loader import discover_plugins
 
 
@@ -118,6 +118,123 @@ def test_plugin_metadata_validates_direct_contract_fields() -> None:
         )
     with pytest.raises(ValueError):
         PluginMetadata(name="orbit-valid", version="1.0.0-" + "x" * 250)
+
+
+def test_lifecycle_only_plugin_does_not_need_optional_setup_hook() -> None:
+    """The minimal plugin protocol requires lifecycle hooks, not composition setup."""
+
+    class LifecycleOnly:
+        metadata = PluginMetadata(name="orbit-lifecycle-only", version="1.0.0")
+
+        async def activate(self) -> None:
+            pass
+
+        async def deactivate(self) -> None:
+            pass
+
+    plugin = LifecycleOnly()
+    assert isinstance(plugin, PluginContract)
+
+    registry = PluginRegistry()
+    registry.register(plugin)
+    registry.setup(Application(ApplicationConfig(name="plugin-without-setup")))
+    assert registry.ordered() == (plugin,)
+
+
+def test_plugin_setup_hooks_run_only_once() -> None:
+    """Repeated registry setup cannot duplicate plugin composition side effects."""
+    calls: list[str] = []
+
+    class RecordedSetup(Extension):
+        def setup(self, application: Application) -> None:
+            calls.append("setup")
+
+    registry = PluginRegistry()
+    registry.register(RecordedSetup())
+    application = Application(ApplicationConfig(name="single-plugin-setup"))
+
+    registry.setup(application)
+    with pytest.raises(PluginError, match="already been frozen"):
+        registry.setup(application)
+
+    assert calls == ["setup"]
+
+
+def test_failed_plugin_setup_cannot_be_retried() -> None:
+    """A partial setup failure stays frozen to prevent repeating unknown side effects."""
+    calls: list[str] = []
+
+    class FailingSetup(Extension):
+        def setup(self, application: Application) -> None:
+            calls.append("setup")
+            raise RuntimeError("partial composition")
+
+    registry = PluginRegistry()
+    registry.register(FailingSetup())
+    application = Application(ApplicationConfig(name="failed-plugin-setup"))
+
+    with pytest.raises(RuntimeError, match="partial composition"):
+        registry.setup(application)
+    with pytest.raises(PluginError, match="already been frozen"):
+        registry.setup(application)
+
+    assert calls == ["setup"]
+
+
+def test_async_setup_hook_is_rejected_during_registration() -> None:
+    """Async composition hooks fail before a coroutine can be silently discarded."""
+
+    class AsyncSetup(Extension):
+        async def setup(self, application: Application) -> None:
+            raise AssertionError("async setup must not run")
+
+    with pytest.raises(PluginError, match="synchronous"):
+        PluginRegistry().register(AsyncSetup())
+
+
+def test_sync_setup_returning_coroutine_fails_without_leaking_it() -> None:
+    """Unexpected awaitables from sync hooks are rejected and native coroutines closed."""
+
+    class AwaitableSetup(Extension):
+        async def finish_setup(self) -> None:
+            raise AssertionError("returned coroutine must not run")
+
+        def setup(self, application: Application) -> object:
+            return self.finish_setup()
+
+    registry = PluginRegistry()
+    registry.register(AwaitableSetup())
+    with pytest.raises(PluginError, match="synchronous"):
+        registry.setup(Application(ApplicationConfig(name="bad-async-setup")))
+
+
+@pytest.mark.asyncio
+async def test_sync_setup_returning_task_cancels_and_consumes_it() -> None:
+    """Invalid setup tasks are cancelled and allowed to finish cleanup before the test exits."""
+    started = asyncio.Event()
+    cleaned_up = asyncio.Event()
+
+    async def worker() -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaned_up.set()
+
+    task = asyncio.create_task(worker())
+    await started.wait()
+
+    class TaskSetup(Extension):
+        def setup(self, application: Application) -> object:
+            return task
+
+    registry = PluginRegistry()
+    registry.register(TaskSetup())
+    with pytest.raises(PluginError, match="synchronous"):
+        registry.setup(Application(ApplicationConfig(name="task-returning-setup")))
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cleaned_up.is_set()
 
 
 def test_plugin_registry_capacity_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:

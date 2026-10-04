@@ -70,8 +70,6 @@ class MetricSnapshot:
             ):
                 raise ValueError("Metric snapshot labels must have valid names and text values.")
             labels[name] = value
-        if self.kind == "histogram" and "le" in labels:
-            raise ValueError("The Prometheus 'le' label is reserved for histogram buckets.")
         if not _is_finite(self.value) or not _is_finite(self.sum):
             raise ValueError("Metric snapshot values must be finite numbers.")
         if isinstance(self.count, bool) or not isinstance(self.count, int) or self.count < 0:
@@ -155,8 +153,8 @@ class MetricsRegistry:
 
     The registry is deliberately backend-neutral. Updates are synchronized, label names are
     fixed when a metric is registered, and ``max_series`` prevents unbounded cardinality. Use
-    :meth:`snapshots` to feed an exporter or :meth:`prometheus` for the standard text format;
-    Core does not open a metrics endpoint or choose an external telemetry vendor.
+    :meth:`snapshots` to feed a separately installed exporter; Core does not select an exposition
+    format, open a metrics endpoint, or choose an external telemetry vendor.
     """
 
     def __init__(self, *, max_series: int = 10_000, max_metrics: int = 1_000) -> None:
@@ -232,8 +230,6 @@ class MetricsRegistry:
             )
         if tuple(sorted(set(buckets))) != buckets:
             raise ValueError("Histogram buckets must be strictly increasing.")
-        if isinstance(labels, tuple) and "le" in labels:
-            raise ValueError("The Prometheus 'le' label is reserved for histogram buckets.")
         with self._lock:
             self._register(name, "histogram", labels)
             current = self._histograms.get(name)
@@ -294,43 +290,6 @@ class MetricsRegistry:
                     for key, value in metric.values.items():
                         result.append(MetricSnapshot(name, metric.kind, dict(key), value))
             return tuple(result)
-
-    def prometheus(self) -> str:
-        """Render snapshots using the Prometheus text exposition format."""
-        # Capture definitions and values at the same lock boundary. Rendering
-        # happens afterwards, so exporters never iterate a registry dictionary
-        # while another task registers a metric.
-        with self._lock:
-            definitions = tuple((name, metric.kind) for name, metric in self._metrics.items())
-            snapshots = self.snapshots()
-        lines: list[str] = []
-        for name, kind in definitions:
-            lines.append(f"# TYPE {name} {kind}")
-            for snapshot in (item for item in snapshots if item.name == name):
-                labels = self._labels(snapshot.labels)
-                if snapshot.kind == "histogram":
-                    if snapshot.buckets is None:
-                        raise RuntimeError("Histogram snapshots must contain bucket values.")
-                    for bound, count in sorted(snapshot.buckets.items()):
-                        bucket_labels = self._labels({**snapshot.labels, "le": str(bound)})
-                        lines.append(f"{snapshot.name}_bucket{bucket_labels} {count}")
-                    inf_labels = self._labels({**snapshot.labels, "le": "+Inf"})
-                    lines.append(f"{snapshot.name}_bucket{inf_labels} {snapshot.count}")
-                    lines.append(f"{snapshot.name}_sum{labels} {snapshot.sum}")
-                    lines.append(f"{snapshot.name}_count{labels} {snapshot.count}")
-                else:
-                    lines.append(f"{snapshot.name}{labels} {snapshot.value}")
-        return "\n".join(lines) + ("\n" if lines else "")
-
-    @staticmethod
-    def _labels(labels: Mapping[str, str]) -> str:
-        if not labels:
-            return ""
-        escaped = {
-            key: value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-            for key, value in sorted(labels.items())
-        }
-        return "{" + ",".join(f'{key}="{value}"' for key, value in escaped.items()) + "}"
 
 
 class Counter:

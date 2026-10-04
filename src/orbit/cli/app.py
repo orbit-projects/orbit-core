@@ -129,7 +129,8 @@ def _ensure_host_dependencies(server: HostServer) -> ModuleType | None:
         imported = {module: importlib.import_module(module) for module in required_modules}
     except ImportError:
         # Disable Rich markup so the literal extra name remains copyable in the diagnostic.
-        console.print("Install orbit-core[server] to use the selected host.", markup=False)
+        extra = "development-server" if server is HostServer.UVICORN else "server"
+        console.print(f"Install orbit-core[{extra}] to use the selected host.", markup=False)
         raise typer.Exit(1) from None
     return imported.get("uvicorn")
 

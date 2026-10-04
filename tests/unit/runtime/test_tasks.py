@@ -151,6 +151,32 @@ async def test_supervisor_zero_history_disables_failure_retention() -> None:
 
 
 @pytest.mark.asyncio
+async def test_supervisor_history_retains_newest_failures_in_order() -> None:
+    """A full failure-history window evicts its oldest entry, preserving chronology."""
+    attempts = 0
+    finished = asyncio.Event()
+
+    async def worker() -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 4:
+            raise RuntimeError("transient")
+        finished.set()
+
+    supervisor = TaskSupervisor(history_size=2)
+    supervisor.register(
+        "worker", worker, policy=RestartPolicy.ON_FAILURE, max_restarts=3, restart_delay=0
+    )
+    await supervisor.start()
+    await asyncio.wait_for(finished.wait(), timeout=0.2)
+    await asyncio.sleep(0)
+
+    assert [failure.attempt for failure in supervisor.history] == [2, 3]
+    assert supervisor.infos[0].attempts == 4
+    await supervisor.stop()
+
+
+@pytest.mark.asyncio
 async def test_supervisor_supports_explicit_restart_and_preserves_history() -> None:
     started = asyncio.Event()
     release = asyncio.Event()
@@ -247,6 +273,37 @@ async def test_supervisor_serializes_restart_and_stop() -> None:
     results = await asyncio.gather(restart, stop, return_exceptions=True)
 
     assert all(isinstance(result, (type(None), RuntimeError)) for result in results)
+    assert supervisor.infos[0].state is TaskState.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stop_waits_for_task_cleanup_before_propagating() -> None:
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+
+    async def worker() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            cleanup_finished.set()
+
+    supervisor = TaskSupervisor(shutdown_timeout=1)
+    supervisor.register("worker", worker)
+    await supervisor.start()
+    stopping = asyncio.create_task(supervisor.stop())
+    await asyncio.wait_for(cleanup_started.wait(), timeout=0.2)
+    stopping.cancel()
+    await asyncio.sleep(0)
+
+    assert not stopping.done()
+    release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await stopping
+
+    assert cleanup_finished.is_set()
     assert supervisor.infos[0].state is TaskState.STOPPED
 
 

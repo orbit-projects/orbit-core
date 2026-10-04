@@ -11,8 +11,24 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Public Core testing utilities for applications, adapters and plugin contract suites."""
+"""Core SQL capability contracts and the built-in SQLite implementation."""
 
-from orbit.testing.client import TestClient, TestResponse
+from orbit.database.contracts import (
+    SQLDatabase,
+    SQLExecution,
+    SQLParameters,
+    SQLRow,
+    SQLTransaction,
+    SQLValue,
+)
+from orbit.database.sqlite import SQLiteDatabase
 
-__all__ = ["TestClient", "TestResponse"]
+__all__ = [
+    "SQLDatabase",
+    "SQLExecution",
+    "SQLParameters",
+    "SQLRow",
+    "SQLTransaction",
+    "SQLValue",
+    "SQLiteDatabase",
+]

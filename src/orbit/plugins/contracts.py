@@ -20,7 +20,12 @@ from orbit.plugins.metadata import PluginMetadata
 
 @runtime_checkable
 class PluginContract(Protocol):
-    """An optional capability that participates in the application lifecycle."""
+    """Minimal lifecycle contract for an optional Orbit plugin.
+
+    A plugin may additionally expose ``setup(application)`` to register composition-time
+    contributions. That hook is optional and is deliberately not required by this protocol.
+    Plugins that want a default setup hook can subclass :class:`orbit.plugins.Plugin`.
+    """
 
     @property
     def metadata(self) -> PluginMetadata:
