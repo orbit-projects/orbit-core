@@ -81,8 +81,8 @@ class AdminClientError(RuntimeError):
 
     def __init__(self, status: int, code: str) -> None:
         """Create a bounded error that cannot inject arbitrary remote response text."""
-        if isinstance(status, bool) or not isinstance(status, int) or not 400 <= status <= 599:
-            raise ValueError("Admin error status must be an integer from 400 through 599.")
+        if isinstance(status, bool) or not isinstance(status, int) or not 300 <= status <= 599:
+            raise ValueError("Admin error status must be an integer from 300 through 599.")
         if not isinstance(code, str) or _ERROR_CODE_PATTERN.fullmatch(code) is None:
             raise ValueError("Admin error codes must be lowercase identifier-shaped strings.")
         self.status = status
@@ -91,7 +91,12 @@ class AdminClientError(RuntimeError):
 
 
 class AdminClient:
-    """Authenticated client for Core inspection and explicitly authorized operations."""
+    """Authenticated client for Core inspection and explicitly authorized operations.
+
+    The client binds to the event loop used by its first request. Keep one instance per
+    application event loop; using it from another loop raises ``RuntimeError`` rather than
+    relying on asyncio primitive behavior that can vary with contention.
+    """
 
     def __init__(
         self,
@@ -139,6 +144,8 @@ class AdminClient:
         self._sync_slots = asyncio.Semaphore(max_sync_workers)
         self._async_slots = asyncio.Semaphore(max_async_operations)
         self._detached_async: dict[tuple[str, str], asyncio.Future[AdminHTTPResponse]] = {}
+        self._event_loop: asyncio.AbstractEventLoop | None = None
+        self._event_loop_lock = threading.Lock()
 
     async def inspect(self, section: str) -> Mapping[str, Any]:
         """Fetch one allowlisted inspection section."""
@@ -188,6 +195,7 @@ class AdminClient:
     async def _request(
         self, method: str, path: str, *, body: Mapping[str, Any] | None = None
     ) -> Mapping[str, Any]:
+        self._bind_event_loop()
         request = self._transport.request
         headers = dict(self._headers)
         result: AdminHTTPResponse | Awaitable[AdminHTTPResponse]
@@ -280,15 +288,29 @@ class AdminClient:
             response = result
         if not isinstance(response, AdminHTTPResponse):
             raise TypeError("Admin transports must return AdminHTTPResponse.")
-        if response.status >= 400:
+        if not 200 <= response.status < 300:
             raw_code = response.body.get("code")
             code = (
                 raw_code
                 if isinstance(raw_code, str) and _ERROR_CODE_PATTERN.fullmatch(raw_code)
-                else "admin.remote-failure"
+                else (
+                    "admin.unexpected-status" if response.status < 400 else "admin.remote-failure"
+                )
             )
             raise AdminClientError(response.status, code)
         return dict(response.body)
+
+    def _bind_event_loop(self) -> None:
+        """Bind this client's asyncio resources to the first request's running loop."""
+        current_loop = asyncio.get_running_loop()
+        with self._event_loop_lock:
+            if self._event_loop is None:
+                self._event_loop = current_loop
+            elif self._event_loop is not current_loop:
+                raise RuntimeError(
+                    "AdminClient instances may only be used from the event loop of their first "
+                    "request."
+                )
 
     def _reject_pending_async(self, operation: tuple[str, str]) -> None:
         """Fail closed while one cancellation-resistant operation is still unwinding."""

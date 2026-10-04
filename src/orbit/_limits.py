@@ -23,7 +23,6 @@ MAX_PATH_PARAMETERS: int = 128
 MAX_PATH_PARAMETER_NAME_LENGTH: int = 127
 _MAX_CORE_CAPACITY: int = 1_000_000
 _MAX_RELATION_ENTRIES: int = 1_024
-_MAX_CONFIG_FILE_BYTES: int = 64 * 1024 * 1024
 _EXCEPTION_TYPE_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,127}")
 
 
@@ -54,6 +53,38 @@ def is_aware_datetime(value: object) -> TypeGuard[datetime]:
         return value.utcoffset() is not None
     except Exception:
         return False
+
+
+def datetime_utc_microseconds(value: object) -> int:
+    """Return an exact UTC ordering key for an aware datetime without range overflow.
+
+    Python compares datetimes with the same ``tzinfo`` by their wall-clock fields and ignores
+    ``fold``. During a daylight-saving fallback, that can reverse the order of two real instants.
+    This integer key applies the UTC offset arithmetically and also supports values near the
+    representable datetime boundaries without calling ``astimezone`` or converting to float.
+    """
+    invalid = "Datetime comparisons require a timezone-aware value with a usable UTC offset."
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError(invalid)
+    try:
+        offset = value.utcoffset()
+    except Exception as exc:
+        raise ValueError(invalid) from exc
+    if offset is None:
+        raise ValueError(invalid)
+    day_microseconds = 86_400_000_000
+    second_microseconds = 1_000_000
+    local_microseconds = (
+        (value.toordinal() - 1) * day_microseconds
+        + value.hour * 3_600 * second_microseconds
+        + value.minute * 60 * second_microseconds
+        + value.second * second_microseconds
+        + value.microsecond
+    )
+    offset_microseconds = (
+        offset.days * 86_400 + offset.seconds
+    ) * second_microseconds + offset.microseconds
+    return local_microseconds - offset_microseconds
 
 
 def safe_exception_type_name(error: BaseException) -> str:

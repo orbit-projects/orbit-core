@@ -13,10 +13,17 @@ finite positive numbers; booleans, strings, zero, negative, NaN, and infinite va
 rejected at the Core boundary so an invalid expiry cannot create an effectively permanent entry
 or lock. Durable or distributed state providers implement these semantics in adapters.
 
+TTL deadlines are indexed by a min-heap: normal reads and writes inspect only deadlines that are
+due instead of scanning every live key. Refreshes and deletes may leave stale index records, but
+unique tokens prevent those records from expiring a newer value, and periodic compaction bounds
+their retained count. Expiry is observable state mutation and advances the namespace revision once
+when one or more entries are reclaimed.
+
 `StateNamespace.transaction()` provides optimistic multi-key updates: sets and deletes commit
 under one lock and one namespace revision. A stale base revision or capacity violation aborts
-the entire transaction, including value-detachment failures; staged values support the namespace's
-TTL rules. State revisions advance only after every staged `StateEntry` has been constructed
+the entire transaction, including value-detachment failures. A staged entry's TTL countdown begins
+at commit, so time spent preparing the transaction does not consume its live retention period.
+State revisions advance only after every staged `StateEntry` has been constructed
 successfully, and a failed commit closes the transaction so it cannot be retried against a
 possibly changed snapshot. A transaction that only deletes missing keys is a revision-preserving
 no-op. A transaction

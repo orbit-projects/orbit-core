@@ -35,7 +35,8 @@ class Response:
     HTTP framing and TLS belong to the host. Content-Length is computed for buffered
     bodies. Streaming content length is omitted. Header injection and hop-by-hop headers
     are rejected before response.start. If a stream exposes ``aclose``, it must be an
-    async callable so cleanup can be bounded without blocking the event loop.
+    async callable so cleanup can be bounded without blocking the event loop. Statuses
+    204, 205, and 304 cannot carry a body or stream.
     """
 
     status: int = 200
@@ -56,8 +57,8 @@ class Response:
             raise ValueError("Response status must be final (200..599).")
         if not isinstance(self.body, bytes) or (self.stream is not None and self.body):
             raise ValueError("Use a bytes body or a stream, not both.")
-        if self.status in {204, 304} and (self.body or self.stream is not None):
-            raise ValueError("204 and 304 responses cannot contain a body.")
+        if self.status in {204, 205, 304} and (self.body or self.stream is not None):
+            raise ValueError("204, 205, and 304 responses cannot contain a body.")
         if self.stream is not None:
             try:
                 iterator = aiter(self.stream)
@@ -190,12 +191,19 @@ class Response:
         return cls(status, content.encode(), {"content-type": "text/plain; charset=utf-8"})
 
     @classmethod
-    def json(cls, content: Any, *, status: int = 200) -> Response:
+    def json(
+        cls,
+        content: Any,
+        *,
+        status: int = 200,
+        headers: Mapping[str, str] | Sequence[tuple[str, str]] = (),
+    ) -> Response:
         """Serialize JSON strictly; Pydantic models use secret-aware JSON serialization."""
         if isinstance(content, BaseModel):
             content = content.model_dump(mode="json")
         body = json.dumps(content, separators=(",", ":"), allow_nan=False).encode()
-        return cls(status, body, {"content-type": "application/json"})
+        extra_headers = headers.items() if isinstance(headers, Mapping) else headers
+        return cls(status, body, [("content-type", "application/json"), *extra_headers])
 
     @classmethod
     def streaming(

@@ -27,6 +27,7 @@ import asyncio
 import inspect
 import logging
 import re
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -170,14 +171,13 @@ class TaskSupervisor:
             raise TypeError("Task observer must be callable.")
         self._shutdown_timeout = shutdown_timeout
         self._observer_timeout = observer_timeout
-        self._history_size = history_size
         self._observer = observer
         self._specs: dict[str, _TaskSpec] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._states: dict[str, TaskState] = {}
         self._attempts: dict[str, int] = {}
         self._failures: dict[str, TaskFailure | None] = {}
-        self._history: list[TaskFailure] = []
+        self._history: deque[TaskFailure] = deque(maxlen=history_size)
         self._started = False
         self._stopping = False
         self._closed = False
@@ -357,10 +357,7 @@ class TaskSupervisor:
             spec.name, self._attempts[spec.name], error_type, monotonic() - started
         )
         self._failures[spec.name] = failure
-        if self._history_size:
-            self._history.append(failure)
-            if len(self._history) > self._history_size:
-                del self._history[: -self._history_size]
+        self._history.append(failure)
         if self._observer is not None:
             detached = self._detached_observer
             if detached is not None:
@@ -408,7 +405,11 @@ class TaskSupervisor:
         _consume_future_result(task)
 
     async def stop(self) -> None:
-        """Cancel all tasks, wait for cleanup within one shielded shared deadline, and close."""
+        """Cancel tasks and await bounded cleanup before completing shutdown.
+
+        Concurrent callers share one shutdown operation. Caller cancellation is deferred
+        until cleanup finishes or reaches its deadline, then re-raised to the caller.
+        """
         if self._close_task is None:
             self._close_task = asyncio.create_task(self._stop())
         cancelled = False

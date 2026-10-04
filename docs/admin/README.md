@@ -1,8 +1,41 @@
 # Administrative surface
 
+Orbit Core's first-class Admin foundation is an opt-in, authenticated HTML overview and a set of
+typed inspection and operational endpoints backed by the same application, service, plugin, health,
+and diagnostic state as the runtime and CLI. It is not a general business-data CRUD or analytics
+dashboard. The broader `orbit-admin` dashboard framework in the ecosystem plan is an optional
+package and is not implemented in this repository or the current local sibling workspaces.
+
 Enable `ApplicationConfig(admin_enabled=True)` and supply an `Authenticator` to the runtime.
 All inspection requires `orbit.admin.read`. An absent identity produces 401; insufficient
 roles produce 403. No built-in password, bearer token or permissive fallback is provided.
+
+For a small local deployment, Core's built-in Basic Authenticator can provide that identity. Supply
+the password through the deployment's secret mechanism (environment variables are shown here only
+as an example); do not hardcode or commit it:
+
+```python
+import os
+
+from pydantic import SecretStr
+
+from orbit import Application, ApplicationConfig
+from orbit.runtime import Runtime
+from orbit.security import BasicAuthenticator, BasicCredential
+
+application = Application(ApplicationConfig(name="orders", admin_enabled=True))
+admin = BasicCredential.create(
+    os.environ["ORBIT_ADMIN_USERNAME"],
+    SecretStr(os.environ["ORBIT_ADMIN_PASSWORD"]),
+    roles=("orbit.admin.read", "orbit.admin.write"),
+)
+runtime = Runtime(application, authenticator=BasicAuthenticator([admin]))
+```
+
+Basic Auth requires HTTPS by default. For TLS termination at a reverse proxy, configure Core to
+trust forwarded scheme information only from the proxy's explicitly trusted address range; never
+forward client-supplied `Forwarded` or `X-Forwarded-Proto` values blindly. The sample credential
+has both read and write roles; grant only the roles each operator needs.
 
 | Endpoint | Data or operation |
 | --- | --- |
@@ -62,8 +95,11 @@ their respective deployment and adapter systems.
 
 `AdminClient` is the typed remote-client boundary. It sends bearer credentials, allowlists
 inspection sections, validates service and task operations, and converts structured remote
-failures into `AdminClientError`; only final `4xx–5xx` failures are representable, and malformed
-remote error codes are replaced with a safe fallback.
+failures into `AdminClientError`. Only final `2xx` responses count as success; redirects, cache
+statuses, and `4xx–5xx` responses fail with a structured error, and malformed remote error codes
+are replaced with a safe fallback.
+An instance binds to the event loop of its first request and must not be reused from another loop;
+create one client per application event loop.
 Supply an `AdminTransport` adapter to control HTTP pooling,
 TLS, proxies, retries, and certificate policy without adding a network dependency to Core.
 Credentials and operation identifiers are bounded and validated before an adapter call. Async

@@ -39,8 +39,9 @@ ordinary exception messages from imported application modules are not echoed to 
 `orbit serve` accepts `--server uvicorn|gunicorn`, `--workers`, `--host`, `--port`, and `--reload`.
 Reload is valid only with Uvicorn. Gunicorn requires a `Runtime` target and uses the
 `uvicorn-worker` ASGI worker. Orbit checks the selected host modules before starting a process and
-reports the `orbit-core[server]` installation requirement when they are unavailable. Use the
-host's own options for proxy, TLS and process settings;
+reports the matching installation extra when they are unavailable: install
+`orbit-core[development-server]` for Uvicorn-only local development or `orbit-core[server]` for
+Gunicorn production hosting. Use the host's own options for proxy, TLS and process settings;
 Orbit's application limits remain in `ApplicationConfig`.
 For Gunicorn, the command replaces the CLI process with the Gunicorn master so container and
 service-manager signals address the production process directly.
@@ -49,8 +50,9 @@ service-manager signals address the production process directly.
 provided for operational scripts that distinguish launching from serving.
 
 Use the authenticated admin API to inspect live worker state. A local `orbit health` command
-does not prove that a separately deployed process is healthy. Install the `server` extra
-for either hosting mode.
+does not prove that a separately deployed process is healthy. The `development-server` extra
+installs only Uvicorn; the production `server` extra installs Uvicorn, Gunicorn, and the Uvicorn
+worker integration.
 
 Core intentionally does not provide an `orbit admin` network command yet. The remote
 `AdminClient` is a transport-neutral contract; a concrete HTTP transport belongs to the

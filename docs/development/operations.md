@@ -24,8 +24,9 @@ with cancellation and should avoid destructive or expensive work.
 
 ## Logs and telemetry
 
-Core uses standard-library logging without configuring the root logger. Install
-`orbit.diagnostics.JSONFormatter` on a handler owned by the application or host.
+Core uses standard-library logging without configuring the root logger. For optional structured
+JSON output, install `orbit-logging` and attach its formatter to a handler owned by the application
+or host; Core remains usable without that package.
 It emits timestamp, logger, level, explicit message, application identity and the
 server-generated request ID. Exceptions add their type; arbitrary extras, stack locals,
 credentials and exception messages are not implicitly serialized. Application log messages

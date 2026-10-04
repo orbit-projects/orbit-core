@@ -16,13 +16,13 @@
 import asyncio
 
 import pytest
+from orbit_testing import TestClient
 from pydantic import BaseModel
 
 from orbit import Application, ApplicationConfig
 from orbit.asgi import ASGIApplication
 from orbit.security import Identity, Principal
 from orbit.services import Service, ServiceDescriptor
-from orbit.testing import TestClient
 
 
 @pytest.mark.parametrize(
@@ -381,4 +381,13 @@ async def test_admin_mutations_require_explicit_authorization_and_audit_success(
         )
         assert refresh.status == 200
         audit = await client.request("GET", "/admin/audit")
-    assert any(item["action"] == "service.restart" for item in audit.json())
+    records = audit.json()
+    assert any(item["action"] == "service.restart" and item["success"] for item in records)
+    assert {
+        (item["action"], item["target"], item["success"], item["error_code"])
+        for item in records
+        if item["target"] in {"missing", "worker"}
+    } >= {
+        ("service.restart", "missing", False, "services.not-found"),
+        ("task.restart", "missing", False, "tasks.not-found"),
+    }

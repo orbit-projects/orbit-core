@@ -37,6 +37,7 @@ Documentation = "https://github.com/orbit-projects/orbit-core/tree/main/docs"
 Security = "https://github.com/orbit-projects/orbit-core/security/policy"
 
 [project.optional-dependencies]
+development-server = ["uvicorn>=0.34,<1"]
 server = [
   "gunicorn>=26.2,<27",
   "uvicorn>=0.34,<1",
@@ -54,6 +55,12 @@ dev = [
   "pip>=26.2,<27",
   "uv==0.12.13",
 ]
+
+[dependency-groups]
+dev = ["orbit-testing>=0.1.0a1,<0.2"]
+
+[tool.uv.sources]
+orbit-testing = { path = "../orbit-testing", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/orbit"]

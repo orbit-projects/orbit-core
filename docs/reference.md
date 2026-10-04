@@ -17,26 +17,29 @@ Use the focused package exports for the rest of Core:
 
 | Package | Responsibility | Typical public types |
 | --- | --- | --- |
+| `orbit` | Minimal application-composition import surface | `Application`, `ApplicationBuilder`, `ApplicationConfig`, `Service`, `ServiceDescriptor`, `__version__` |
 | `orbit.application` | Application composition and summaries | `Application`, `ApplicationBuilder` |
 | `orbit.services` | Service contracts and registration | `Service`, `ServiceContract`, `ServiceDescriptor`, `ServiceRegistry` |
-| `orbit.config` | Typed settings, snapshots, secrets, and watchers | `ApplicationConfig`, `Config`, `load_config`, `SecretReference` |
+| `orbit.config` | Typed settings, snapshots, secret and watcher contracts | `ApplicationConfig`, `Config`, `ConfigurationWatcher`, `load_config`, `SecretReference` |
 | `orbit.container` | Dependency injection and resource ownership | `Container`, `ContainerContract`, `Provider`, `Scope`, `ProviderResolution` |
+| `orbit.database` | Asynchronous SQL contracts and built-in SQLite | `SQLDatabase`, `SQLTransaction`, `SQLRow`, `SQLiteDatabase` |
 | `orbit.errors` | Structured problems and Core exception types | `OrbitProblem`, `ErrorResponse`, `OrbitError`, `ValidationError` |
 | `orbit.cli` | Typer/Rich operator command entry point | `app` |
 | `orbit.lifecycle` | Validated lifecycle phases and transitions | `Lifecycle`, `LifecycleObserver`, `LifecyclePhase` |
 | `orbit.plugins` | Plugin metadata, discovery, and composition | `Plugin`, `PluginContract`, `PluginMetadata`, `PluginRegistry` |
-| `orbit.reliability` | Provider-neutral retry, deadline, circuit, and bulkhead primitives | `Deadline`, `RetryPolicy`, `CircuitBreaker`, `Bulkhead`, `resilient_call` |
 | `orbit.routing` | Framework-neutral route metadata and dispatch | `Router`, `Route`, `RouteMetadata` |
 | `orbit.events` | Typed in-process event delivery and storage contracts | `Event`, `EventBus`, `Delivery`, `Subscription`, `EventStore` |
 | `orbit.state` | Runtime snapshots, namespaces, providers, and leases | `State`, `StateStore`, `StateProvider` |
 | `orbit.health` | Component and aggregate health reporting | `HealthCheck`, `HealthService`, `HealthReport` |
 | `orbit.runtime` | ASGI runtime, hosting configuration, and task supervision | `Runtime`, `HostingConfig`, `TaskSupervisor` |
-| `orbit.asgi` | Core ASGI request, response, and middleware boundary | `ASGIApplication`, `Middleware`, typed `Request`, `Response` |
+| `orbit.asgi` | Core ASGI request, response, and middleware boundary | `ASGIApplication`, `Middleware`, `Headers`, typed `Request`, `Response`, ASGI message types |
 | `orbit.admin` | Authenticated inspection and remote admin client contracts | `AdminApplication`, `AdminContribution`, `AdminClient` |
 | `orbit.security` | Identity, authentication, authorization, and token contracts | `Principal`, `Authenticator`, `PolicyEngine` |
 | `orbit.diagnostics` | Logs, metrics, traces, and bounded inspection | `Diagnostics`, `MetricsRegistry`, `Tracer` |
-| `orbit.testing` | Protocol-aware test helpers | `TestClient`, `TestResponse` |
 | `orbit.types` | Domain-specific identifiers | `ApplicationId`, `ConfigurationId`, `EventId`, `ProviderId`, `RequestId`, `RouteId`, `ServiceId`, `SubscriptionId` |
+
+The optional `orbit-testing` distribution provides `orbit_testing.TestClient` and
+`orbit_testing.TestResponse`; Core itself does not ship test helpers.
 
 ## Contract versus implementation
 
@@ -59,7 +62,8 @@ For a type or callable, read in this order:
 4. the relevant ADR when lifecycle, hosting, security, or dependency direction is involved;
 5. tests that exercise the public contract.
 
-The repository's documentation check validates module docstrings, public class/function/method
-docstrings, Markdown structure, local links, and stale-work markers in comments. It does not
-replace human review: docstrings must explain why a boundary exists when the type signature alone
-cannot make ownership, cancellation, redaction, or concurrency behavior clear.
+The repository's documentation check validates Core and checked-out sibling Orbit package module
+docstrings, public class/function/method docstrings, Markdown structure, local links, and stale-work
+markers in comments. It does not replace human review: docstrings must explain why a boundary
+exists when the type signature alone cannot make ownership, cancellation, redaction, or concurrency
+behavior clear.

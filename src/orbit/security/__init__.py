@@ -14,11 +14,11 @@
 """Provider-neutral identity, principal, context, and authorization contracts."""
 
 from orbit.security.authorization import PolicyEngine, require_roles
+from orbit.security.basic import BasicAuthenticator, BasicCredential
 from orbit.security.bearer import BearerAuthenticator, TokenVerifier
 from orbit.security.contracts import Authenticator
 from orbit.security.identity import Identity
 from orbit.security.jwks import JsonWebKey, JsonWebKeySet, JwksProvider
-from orbit.security.jwt import PyJWTVerifier
 from orbit.security.oauth import (
     OAuthAuthorizationRequest,
     OAuthProvider,
@@ -42,8 +42,9 @@ __all__ = [
     "OAuthTokenResponse",
     "JsonWebKeySet",
     "JwksProvider",
-    "PyJWTVerifier",
     "BearerAuthenticator",
+    "BasicAuthenticator",
+    "BasicCredential",
     "Authenticator",
     "PolicyEngine",
     "Principal",

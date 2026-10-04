@@ -24,28 +24,76 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOTS = (ROOT / "src", ROOT / "tests", ROOT / "examples", ROOT / "scripts")
 MARKDOWN_ROOTS = (ROOT,)
+GENERATED_DIRECTORIES = frozenset(
+    {
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+    }
+)
 LOCAL_LINK = re.compile(r"\[[^]]+\]\(([^)]+)\)")
 FORBIDDEN_COMMENT_MARKERS = re.compile(r"\b(?:TODO|FIXME|XXX|HACK|WIP)\b", re.IGNORECASE)
 
 
 def python_files() -> list[Path]:
-    """Return repository Python files covered by documentation policy."""
+    """Return maintained Core and sibling-package Python files under documentation policy."""
     return sorted(
         path
-        for base in PYTHON_ROOTS
+        for base in (*PYTHON_ROOTS, *sibling_python_roots())
         for path in base.rglob("*.py")
-        if ".venv" not in path.parts and "__pycache__" not in path.parts
+        if not GENERATED_DIRECTORIES.intersection(path.parts)
+    )
+
+
+def sibling_workspaces() -> tuple[Path, ...]:
+    """Return existing sibling Orbit package workspaces without including Core itself."""
+    return tuple(
+        sorted(
+            path
+            for path in ROOT.parent.glob("orbit-*")
+            if path.is_dir() and path.resolve() != ROOT.resolve()
+        )
+    )
+
+
+def sibling_source_roots() -> tuple[Path, ...]:
+    """Return ``src`` roots for checked-out sibling Orbit packages."""
+    return tuple(path / "src" for path in sibling_workspaces() if (path / "src").is_dir())
+
+
+def sibling_python_roots() -> tuple[Path, ...]:
+    """Return maintained Python roots from each checked-out sibling package."""
+    root_names = ("src", "tests", "examples", "scripts")
+    return tuple(
+        workspace / name
+        for workspace in sibling_workspaces()
+        for name in root_names
+        if (workspace / name).is_dir()
     )
 
 
 def markdown_files() -> list[Path]:
-    """Return repository Markdown files, excluding generated environments and artifacts."""
+    """Return Core and sibling-package Markdown, excluding generated environments."""
     return sorted(
         path
-        for base in MARKDOWN_ROOTS
+        for base in (*MARKDOWN_ROOTS, *sibling_workspaces())
         for path in base.rglob("*.md")
-        if ".venv" not in path.parts and ".git" not in path.parts and "dist" not in path.parts
+        if not GENERATED_DIRECTORIES.intersection(path.parts)
     )
+
+
+def public_api_roots() -> tuple[Path, ...]:
+    """Return import-package roots whose public APIs require module and callable docstrings."""
+    roots = [ROOT / "src" / "orbit"]
+    for source_root in sibling_source_roots():
+        roots.extend(path for path in source_root.iterdir() if path.is_dir())
+    return tuple(roots)
 
 
 def public_documentation_errors(path: Path, tree: ast.Module) -> list[str]:
@@ -110,13 +158,14 @@ def markdown_errors(path: Path) -> list[str]:
 def main() -> int:
     """Validate source docstrings, comment hygiene, Markdown structure, and local links."""
     errors: list[str] = []
+    documented_roots = public_api_roots()
     for path in python_files():
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except SyntaxError as exc:
             errors.append(f"{path}:{exc.lineno}: invalid Python syntax")
             continue
-        if path.is_relative_to(ROOT / "src/orbit"):
+        if any(path.is_relative_to(root) for root in documented_roots):
             errors.extend(public_documentation_errors(path, tree))
         errors.extend(comment_errors(path))
     for path in markdown_files():

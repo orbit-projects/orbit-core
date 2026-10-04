@@ -10,16 +10,31 @@ ASGI worker and protocol implementation. Gunicorn supplies the pre-fork process 
 handling, worker supervision, graceful replacement and multi-worker lifecycle. Local reload and
 single-worker execution use Uvicorn directly; managed multi-worker execution uses Gunicorn with
 the `uvicorn-worker` worker package. Orbit's `Runtime.asgi` object is the application boundary in
-both modes, while neither server owns Orbit lifecycle state.
+both modes, while neither server owns Orbit lifecycle state. Core also defines a common SQL
+capability contract with a built-in SQLite implementation for local and embedded use.
 
-Provider technology never enters Core directly. A capability first receives an adapter package named
-`orbit-<capability>`; provider implementations then use `orbit-<capability>-<provider>`.
-
-The intended dependency direction is:
+External provider technology does not enter Core. Some optional features are direct plugins. For
+capabilities that need a uniform API across providers, the capability package is named
+`orbit-<capability>` and the provider-specific adapter is named
+`orbit-<capability>-<provider>`. The installed SQL example shows how Core contracts, a reusable
+capability, and a provider adapter compose without pulling the provider SDK into Core:
 
 ```text
-application -> orbit-core -> capability adapter -> provider SDK
+application
+├── orbit-core (orchestration and shared contracts)
+└── orbit-data (repository capability)
+    └── orbit-sql (SQL implementation over Core's SQLDatabase contract)
+        └── orbit-sql-postgres (PostgreSQL adapter)
+            └── asyncpg (provider driver)
 ```
+
+An application using embedded SQLite can install `orbit-data` and `orbit-sql` without installing
+`orbit-sql-postgres` or asyncpg. A direct plugin such as `orbit-jwt` can implement a Core contract
+without an additional capability package when a separate abstraction would not add useful reuse.
+In either arrangement, Core never installs the optional package or provider dependency implicitly.
+
+SQLite is the deliberately small built-in local SQL baseline; server databases implement the same
+Core SQL contract through separate adapters.
 
 Core may include an in-memory implementation when it is useful for deterministic tests, but that
 implementation is explicitly process-local. It must not silently become the production default for

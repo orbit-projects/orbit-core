@@ -13,6 +13,7 @@
 # limitations under the License.
 """Python exception hierarchy backed by structured Orbit problems."""
 
+from orbit.errors.categories import ErrorCategory
 from orbit.errors.error import OrbitProblem
 
 
@@ -31,6 +32,14 @@ class ConfigurationError(OrbitError):
 
 class ContainerError(OrbitError):
     """Raised when dependency registration or resolution violates a contract."""
+
+
+class DatabaseError(OrbitError):
+    """Raised when a Core database operation fails without exposing driver details."""
+
+    def __init__(self, code: str, message: str) -> None:
+        """Create a bounded database problem safe for application diagnostics."""
+        super().__init__(OrbitProblem(code=code, message=message, category=ErrorCategory.DATABASE))
 
 
 class LifecycleError(OrbitError):
@@ -56,6 +65,7 @@ class ValidationError(OrbitError):
 __all__ = [
     "ConfigurationError",
     "ContainerError",
+    "DatabaseError",
     "LifecycleError",
     "OrbitError",
     "PluginError",

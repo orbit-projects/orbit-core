@@ -14,7 +14,6 @@
 """Diagnostics snapshots built from Core-owned state."""
 
 from orbit.diagnostics.diagnostics import Diagnostics
-from orbit.diagnostics.logging import JSONFormatter
 from orbit.diagnostics.metrics import Counter, Gauge, Histogram, MetricSnapshot, MetricsRegistry
 from orbit.diagnostics.models import DiagnosticSnapshot, LatencyBucket, RequestRecord, TelemetrySink
 from orbit.diagnostics.tracing import InMemoryTracer, Span, SpanRecord, Tracer
@@ -25,7 +24,6 @@ __all__ = [
     "Counter",
     "Gauge",
     "Histogram",
-    "JSONFormatter",
     "InMemoryTracer",
     "LatencyBucket",
     "MetricSnapshot",

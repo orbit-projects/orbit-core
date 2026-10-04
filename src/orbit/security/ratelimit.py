@@ -15,9 +15,11 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 from threading import RLock
 from time import monotonic
+from unicodedata import category
 
 from orbit._limits import is_finite_number
 
@@ -65,7 +67,8 @@ class RateLimiter:
 
     Capacity, refill period and retained-key count are deliberately bounded. This keeps the
     in-process implementation predictable under configuration mistakes and prevents extreme
-    values from overflowing the floating-point token accounting path.
+    values from overflowing the floating-point token accounting path. At capacity, the least
+    recently used identity is evicted in constant time before a new bucket is retained.
     """
 
     def __init__(self, limit: int, period: float, *, max_keys: int = 10_000) -> None:
@@ -89,7 +92,7 @@ class RateLimiter:
         self._period = period
         self._rate = rate
         self._max_keys = max_keys
-        self._buckets: dict[str, _Bucket] = {}
+        self._buckets: OrderedDict[str, _Bucket] = OrderedDict()
         self._lock = RLock()
 
     @property
@@ -118,7 +121,7 @@ class RateLimiter:
             bucket = self._buckets.get(key)
             if bucket is None:
                 if len(self._buckets) >= self._max_keys:
-                    self._evict_oldest()
+                    self._evict_least_recently_used()
                 bucket = _Bucket(float(self.limit), current)
                 self._buckets[key] = bucket
             else:
@@ -131,6 +134,7 @@ class RateLimiter:
                     bucket.tokens + elapsed * self._rate,
                 )
                 bucket.updated_at = max(bucket.updated_at, current)
+                self._buckets.move_to_end(key)
             if bucket.tokens >= cost:
                 bucket.tokens -= cost
                 return RateLimitResult(True, int(bucket.tokens), 0.0)
@@ -149,9 +153,9 @@ class RateLimiter:
         with self._lock:
             return len(self._buckets)
 
-    def _evict_oldest(self) -> None:
-        oldest = min(self._buckets, key=lambda key: self._buckets[key].updated_at)
-        del self._buckets[oldest]
+    def _evict_least_recently_used(self) -> None:
+        """Discard the least recently accessed bucket without scanning all retained keys."""
+        self._buckets.popitem(last=False)
 
     @staticmethod
     def _validate_key(key: str) -> None:
@@ -160,9 +164,9 @@ class RateLimiter:
             not isinstance(key, str)
             or not key
             or len(key) > 255
-            or any(ord(character) < 0x20 or ord(character) == 0x7F for character in key)
+            or any(category(character) == "Cc" for character in key)
         ):
-            raise ValueError("Rate-limit keys must be nonempty and at most 255 characters.")
+            raise ValueError("Rate-limit keys must be control-free and at most 255 characters.")
 
 
 __all__ = ["RateLimitResult", "RateLimiter"]

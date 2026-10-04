@@ -393,6 +393,7 @@ class ASGIApplication:
             if started:
                 _LOG.exception("Response interrupted", extra={"request_id": request_id_text})
                 raise
+            error_headers: list[tuple[str, str]] = []
             if isinstance(exc, HTTPError):
                 status, code, message = exc.status, exc.code, str(exc)
             elif isinstance(exc, ValidationError):
@@ -400,6 +401,9 @@ class ASGIApplication:
             elif isinstance(exc, SecurityError):
                 status = 401 if current_principal() is None else 403
                 code, message = "security.forbidden", "Authentication or authorization required."
+                challenge = getattr(self._authenticator, "challenge", None)
+                if status == 401 and isinstance(challenge, str):
+                    error_headers.append(("www-authenticate", challenge))
             elif isinstance(exc, TimeoutError):
                 status, code, message = 504, "request.timeout", "Request deadline exceeded."
             else:
@@ -411,6 +415,7 @@ class ASGIApplication:
                         Response.json(
                             {"code": code, "message": message, "request_id": request_id_text},
                             status=status,
+                            headers=error_headers,
                         ),
                         scope.get("method", "GET"),
                         tracked_send,
@@ -899,12 +904,32 @@ class ASGIApplication:
         return any(address in ip_network(network, strict=False) for network in networks)
 
     async def _dispatch_traced(self, request: Request) -> Response:
-        """Dispatch through an optional adapter tracer without changing request semantics."""
+        """Dispatch with route-template metadata, never a raw user-controlled path."""
         if self._tracer is None:
             return await self._dispatch(request)
+        route_template: str | None = None
+        is_core_endpoint = (
+            request.path
+            in {
+                "/openapi.json",
+                "/health/live",
+                "/health/ready",
+            }
+            or request.path == "/admin"
+            or request.path.startswith("/admin/")
+        )
+        if not is_core_endpoint:
+            try:
+                route, _ = self._router.match(request.method, request.path)
+            except RoutingError:
+                # Unmatched requests have no safe route template to export.
+                pass
+            else:
+                route_template = route.metadata.path
         async with self._tracer.start_span(f"http.{request.method.lower()}") as span:
             span.set_attribute("http.method", request.method)
-            span.set_attribute("http.route", request.path)
+            if route_template is not None:
+                span.set_attribute("http.route", route_template)
             response = await self._dispatch(request)
             span.set_attribute("http.status_code", response.status)
             span.set_status("error" if response.status >= 500 else "ok")
@@ -913,14 +938,6 @@ class ASGIApplication:
     async def _dispatch(self, request: Request) -> Response:
         async def endpoint(current: Request) -> Response:
             """Invoke the selected endpoint inside its request-owned dependency scope."""
-            if current.path == "/metrics":
-                if current.method not in {"GET", "HEAD"}:
-                    return Response(status=405, headers={"allow": "GET, HEAD"})
-                self._application.diagnostics.update_runtime(self._application)
-                return Response(
-                    body=self._application.diagnostics.metrics.prometheus().encode("utf-8"),
-                    headers={"content-type": "text/plain; version=0.0.4; charset=utf-8"},
-                )
             if current.path == "/openapi.json":
                 if current.method not in {"GET", "HEAD"}:
                     return Response(status=405, headers={"allow": "GET, HEAD"})
@@ -1034,7 +1051,7 @@ class ASGIApplication:
                     "headers": response.wire_headers(),
                 }
             )
-            if normalized_method == "HEAD" or response.status in {204, 304}:
+            if normalized_method == "HEAD" or response.status in {204, 205, 304}:
                 await send({"type": "http.response.body", "body": b"", "more_body": False})
             elif response.stream is not None:
                 async for chunk in response.stream:

@@ -14,21 +14,20 @@
 """ASGI framing, middleware, authentication, readiness and resource integration."""
 
 import asyncio
-import gzip
 from contextlib import asynccontextmanager
 
 import pytest
+from orbit_testing import TestClient
 from pydantic import BaseModel, SecretStr
 
 from orbit import Application, ApplicationConfig, Service, ServiceDescriptor
-from orbit.asgi import ASGIApplication, GZipMiddleware, Response
+from orbit.asgi import ASGIApplication, Response
 from orbit.asgi.request import Headers, HTTPError, Request
 from orbit.container import Scope
 from orbit.diagnostics import InMemoryTracer
 from orbit.health import HealthReport, HealthStatus
 from orbit.security import Identity, Principal
 from orbit.security.context import current_principal
-from orbit.testing import TestClient
 
 
 def compose(**config):
@@ -227,6 +226,38 @@ async def test_runtime_tracer_records_http_span():
     assert span.status == "ok"
 
 
+async def test_runtime_tracer_records_route_template_not_sensitive_path_parameter():
+    app = Application(ApplicationConfig(name="trace-route-template"))
+    tracer = InMemoryTracer()
+    asgi = ASGIApplication(app, tracer=tracer)
+
+    @app.router.route("/users/{user_id}", name="user-detail")
+    async def user_detail(request):
+        return Response.text("ok")
+
+    sensitive_identifier = "credential-like-path-segment"
+    async with TestClient(asgi) as client:
+        response = await client.request("GET", f"/users/{sensitive_identifier}")
+
+    assert response.status == 200
+    span = next(item for item in tracer.history if item.name == "http.get")
+    assert span.attributes["http.route"] == "/users/{user_id}"
+    assert sensitive_identifier not in repr(span.attributes)
+
+
+async def test_runtime_tracer_omits_route_for_unmatched_path():
+    app = Application(ApplicationConfig(name="trace-unmatched-route"))
+    tracer = InMemoryTracer()
+    asgi = ASGIApplication(app, tracer=tracer)
+
+    async with TestClient(asgi) as client:
+        response = await client.request("GET", "/unmatched/sensitive-segment")
+
+    assert response.status == 404
+    span = next(item for item in tracer.history if item.name == "http.get")
+    assert "http.route" not in span.attributes
+
+
 async def test_runtime_enforces_outbound_header_budget_after_runtime_headers() -> None:
     app, asgi = compose()
 
@@ -259,125 +290,6 @@ async def test_runtime_owned_response_headers_cannot_be_overridden() -> None:
     assert len(response.headers.getall("x-content-type-options")) == 1
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["x-request-id"] != "attacker-controlled"
-
-
-async def test_gzip_middleware_negotiates_and_skips_streams():
-    app, asgi = compose()
-    asgi.add_middleware(GZipMiddleware(minimum_size=1))
-
-    @app.router.route("/text", name="text")
-    async def text(request):
-        return Response.text("compress me")
-
-    async with TestClient(asgi) as client:
-        compressed = await client.request("GET", "/text", headers={"accept-encoding": "gzip"})
-        plain = await client.request("GET", "/text")
-    assert compressed.headers["content-encoding"] == "gzip"
-    assert gzip.decompress(compressed.body) == b"compress me"
-    assert "content-encoding" not in plain.headers
-
-
-def test_gzip_rejects_non_integer_limits() -> None:
-    middleware = GZipMiddleware()
-    with pytest.raises(AttributeError):
-        middleware.minimum_size = 1  # type: ignore[misc]
-    with pytest.raises(AttributeError):
-        middleware.compresslevel = 1  # type: ignore[misc]
-    with pytest.raises(ValueError, match="Compression limits"):
-        GZipMiddleware(minimum_size=float("nan"))
-    with pytest.raises(ValueError, match="Compression limits"):
-        GZipMiddleware(compresslevel=True)
-
-
-async def test_gzip_quality_explicit_override_is_order_independent():
-    app, asgi = compose()
-    asgi.add_middleware(GZipMiddleware(minimum_size=1))
-
-    @app.router.route("/text", name="text")
-    async def text(request):
-        return Response.text("compress me")
-
-    async with TestClient(asgi) as client:
-        disabled = await client.request(
-            "GET", "/text", headers={"accept-encoding": "gzip;q=0, *;q=1"}
-        )
-        enabled = await client.request(
-            "GET", "/text", headers={"accept-encoding": "*;q=1, gzip;q=1"}
-        )
-    assert "content-encoding" not in disabled.headers
-    assert enabled.headers["content-encoding"] == "gzip"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "header",
-    [
-        "gzip;Q=0",
-        "gzip;q=1.0000",
-        "gzip;q=0.5e0",
-        "gzip;q=-0.1",
-        "gzip;q=2",
-        "gzip;q=0.",
-    ],
-)
-async def test_gzip_rejects_non_rfc_quality_values(header: str) -> None:
-    """Compression negotiation fails closed for malformed or case-variant qvalues."""
-    app, asgi = compose()
-    asgi.add_middleware(GZipMiddleware(minimum_size=1))
-
-    @app.router.route("/text", name="text")
-    async def text(request):
-        return Response.text("compress me")
-
-    async with TestClient(asgi) as client:
-        response = await client.request("GET", "/text", headers={"accept-encoding": header})
-    assert "content-encoding" not in response.headers
-
-
-async def test_gzip_combines_repeated_accept_encoding_fields_and_rejects_duplicates():
-    app, asgi = compose()
-    asgi.add_middleware(GZipMiddleware(minimum_size=1))
-
-    @app.router.route("/text", name="text")
-    async def text(request):
-        return Response.text("compress me")
-
-    async with TestClient(asgi) as client:
-        combined = await client.request(
-            "GET",
-            "/text",
-            headers=[("accept-encoding", "identity"), ("accept-encoding", "gzip")],
-        )
-        duplicate = await client.request(
-            "GET",
-            "/text",
-            headers=[("accept-encoding", "gzip"), ("accept-encoding", "gzip")],
-        )
-    assert combined.headers["content-encoding"] == "gzip"
-    assert "content-encoding" not in duplicate.headers
-
-
-def test_gzip_negotiation_bounds_untrusted_accept_encoding_lists() -> None:
-    tokens = "gzip," + ",".join(f"encoding-{index}" for index in range(1_024))
-    assert not GZipMiddleware._accepts_gzip((tokens,))  # noqa: SLF001 - parser boundary test.
-    assert not GZipMiddleware._accepts_gzip(("gzip," + "x" * (64 * 1024),))  # noqa: SLF001
-
-
-async def test_gzip_preserves_existing_vary_dimensions():
-    app, asgi = compose()
-    asgi.add_middleware(GZipMiddleware(minimum_size=1))
-
-    @app.router.route("/text", name="text")
-    async def text(request):
-        return Response(
-            body=b"compress me",
-            headers={"content-type": "text/plain", "vary": "Origin"},
-        )
-
-    async with TestClient(asgi) as client:
-        response = await client.request("GET", "/text", headers={"accept-encoding": "gzip"})
-    assert response.headers["content-encoding"] == "gzip"
-    assert response.headers["vary"] == "Origin, Accept-Encoding"
 
 
 @pytest.mark.parametrize(

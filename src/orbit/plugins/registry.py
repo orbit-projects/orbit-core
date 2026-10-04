@@ -127,6 +127,8 @@ class PluginRegistry:
         setup = getattr(plugin, "setup", None)
         if setup is not None and not callable(setup):
             raise _error("invalid-contract", "Plugin setup hook must be callable.")
+        if setup is not None and inspect.iscoroutinefunction(setup):
+            raise _error("invalid-contract", "Plugin setup hooks must be synchronous.")
         try:
             meta = PluginMetadata.model_validate(plugin.metadata)
         except PydanticValidationError as exc:
@@ -186,13 +188,31 @@ class PluginRegistry:
         return tuple(self._plugins[name] for name in names)
 
     def setup(self, application: Application) -> None:
-        """Execute composition hooks once; plugin code is trusted, not sandboxed."""
+        """Run composition hooks once and permanently freeze plugin composition.
+
+        ``setup(application)`` is optional: lifecycle-only plugins still participate in
+        dependency ordering and activation. Setup is not retryable because hooks may have
+        side effects; if one fails, the registry remains frozen. Plugin code is trusted,
+        not sandboxed.
+        """
+        if self._frozen:
+            raise _error("frozen", "Plugin composition has already been frozen.")
         ordered = self.ordered()
         self._frozen = True
         for plugin in ordered:
             setup = getattr(plugin, "setup", None)
             if setup is not None:
-                setup(application)
+                outcome = setup(application)
+                if inspect.isawaitable(outcome):
+                    # A regular function can still return async work. Stop it before failing:
+                    # close native coroutines and cancel loop-owned futures/tasks, consuming
+                    # their eventual result so invalid setup cannot leak work or warnings.
+                    if inspect.iscoroutine(outcome):
+                        outcome.close()
+                    elif isinstance(outcome, asyncio.Future):
+                        outcome.cancel()
+                        outcome.add_done_callback(_consume_future_result)
+                    raise _error("invalid-setup", "Plugin setup hooks must be synchronous.")
                 self._stable_metadata(self._registered_name(plugin), plugin)
 
     async def activate(self, timeout: float = 30) -> None:

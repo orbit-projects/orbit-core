@@ -28,6 +28,8 @@ PolicyEvaluator = Callable[[Principal, Any], bool | Awaitable[bool]]
 
 def require_roles(principal: Principal | None, required: Collection[str]) -> None:
     """Require an authenticated principal possessing every requested role."""
+    if principal is not None and not isinstance(principal, Principal):
+        raise TypeError("principal must be a Principal instance or None.")
     required_roles = _validate_roles(required)
     if principal is None or not required_roles.issubset(principal.roles):
         raise SecurityError(
@@ -83,6 +85,8 @@ class PolicyEngine:
         self, principal: Principal | None, policy: str, resource: Any = None
     ) -> bool:
         """Evaluate a named policy; anonymous or unknown policies are denied."""
+        if principal is not None and not isinstance(principal, Principal):
+            raise TypeError("principal must be a Principal instance or None.")
         if not isinstance(policy, str):
             raise TypeError("Policy names must be strings.")
         if re.fullmatch(r"[a-z][a-z0-9.-]{0,126}", policy) is None:

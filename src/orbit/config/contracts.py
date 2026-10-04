@@ -11,32 +11,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Reusable timeout, retry and isolation primitives for Core adapters."""
+"""Provider-neutral contracts for application-owned configuration extensions."""
 
-from orbit.reliability.resilience import (
-    Bulkhead,
-    CircuitBreaker,
-    CircuitOpenError,
-    CircuitState,
-    Deadline,
-    DefaultFailureClassifier,
-    FailureClassifier,
-    FailureKind,
-    RetryPolicy,
-    resilient_call,
-    retry,
-)
+from typing import Protocol
 
-__all__ = [
-    "Bulkhead",
-    "CircuitBreaker",
-    "CircuitOpenError",
-    "CircuitState",
-    "DefaultFailureClassifier",
-    "Deadline",
-    "FailureClassifier",
-    "FailureKind",
-    "RetryPolicy",
-    "resilient_call",
-    "retry",
-]
+
+class ConfigurationWatcher(Protocol):
+    """Lifecycle contract for optional components that observe configuration changes."""
+
+    async def start(self) -> None:
+        """Begin observing the configuration source owned by the implementation."""
+
+    async def stop(self) -> None:
+        """Stop observing and finish cleanup before returning."""
+
+
+__all__ = ["ConfigurationWatcher"]

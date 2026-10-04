@@ -64,6 +64,86 @@ def test_namespace_capacity_and_snapshot():
     assert namespace.snapshot()[0].key == "a"
 
 
+def test_namespace_expiry_index_ignores_refreshed_deadlines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An older TTL record must not remove a key refreshed with a later deadline."""
+    import orbit.state.namespace as namespace_module
+
+    now = [10.0]
+    monkeypatch.setattr(namespace_module, "monotonic", lambda: now[0])
+    namespace = StateNamespace("expiry-index")
+    namespace.set("session", "old", ttl=5)
+    now[0] = 11.0
+    namespace.set("session", "refreshed", ttl=10)
+
+    now[0] = 15.0
+    assert namespace.get("session") == "refreshed"
+    now[0] = 21.0
+    assert namespace.get("session") is None
+
+
+def test_namespace_transaction_expiry_index_tracks_refreshes_and_batches_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transactional refreshes ignore stale deadlines and batch expiry into one revision."""
+    import orbit.state.namespace as namespace_module
+
+    now = [10.0]
+    monkeypatch.setattr(namespace_module, "monotonic", lambda: now[0])
+    namespace = StateNamespace("transaction-expiry")
+    namespace.set("session", "old", ttl=5)
+
+    now[0] = 11.0
+    with namespace.transaction() as transaction:
+        transaction.set("session", "refreshed", ttl=10)
+        transaction.set("lease", "active", ttl=10)
+    assert namespace.revision == 2
+
+    now[0] = 15.0
+    assert namespace.get("session") == "refreshed"
+    assert namespace.get("lease") == "active"
+
+    now[0] = 21.0
+    assert namespace.revision == 3
+    assert namespace.snapshot() == ()
+
+
+def test_transaction_ttl_starts_at_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A long staging interval must not consume a value's post-commit lifetime."""
+    import orbit.state.namespace as namespace_module
+
+    now = [10.0]
+    monkeypatch.setattr(namespace_module, "monotonic", lambda: now[0])
+    namespace = StateNamespace("transaction-ttl-start")
+    manager = namespace.transaction()
+    transaction = manager.__enter__()
+    transaction.set("session", "active", ttl=5)
+
+    now[0] = 100.0
+    manager.__exit__(None, None, None)
+    now[0] = 104.9
+    assert namespace.get("session") == "active"
+    now[0] = 105.0
+    assert namespace.get("session") is None
+
+
+def test_namespace_expiry_index_compacts_superseded_ttls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated TTL refreshes cannot grow the stale-deadline index without bound."""
+    import orbit.state.namespace as namespace_module
+
+    monkeypatch.setattr(namespace_module, "monotonic", lambda: 10.0)
+    namespace = StateNamespace("expiry-compaction", max_entries=1)
+    for value in range(200):
+        namespace.set("session", value, ttl=60)
+
+    assert namespace.get("session") == 199
+    assert len(namespace._expiry_heap) <= 64
+    assert len(namespace._expiry_tokens) == 1
+
+
 def test_state_entry_validates_metadata_and_detaches_value() -> None:
     original = {"roles": ["reader"]}
     entry = StateEntry("user:1", original, 1, expires_at=10)

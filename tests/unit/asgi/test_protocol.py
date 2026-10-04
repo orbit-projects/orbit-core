@@ -700,6 +700,10 @@ def test_response_rejects_invalid_status_and_body_framing() -> None:
         Response(status=204, body=b"unexpected")
     with pytest.raises(ValueError, match="body"):
         Response(status=304, stream=iter(()))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="body"):
+        Response(status=205, body=b"unexpected")
+    with pytest.raises(ValueError, match="body"):
+        Response(status=205, stream=iter(()))  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="asynchronous"):
         Response(stream=iter(()))  # type: ignore[arg-type]
 

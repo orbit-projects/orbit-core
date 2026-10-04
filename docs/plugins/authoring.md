@@ -2,22 +2,40 @@
 
 This guide defines the minimum contract for an Orbit plugin that can be installed and tested
 independently of Orbit Core. A plugin is an extension package, not a patch to Core. Keep provider
-SDKs, credentials, migrations, network clients, and vendor-specific error handling in the plugin.
+SDKs, credentials, migrations, network clients, and vendor-specific error handling outside Core.
+Depending on the capability, the ecosystem may add a separately installable capability package
+between Core contracts and a provider-specific adapter/plugin, so applications have a consistent
+API across providers. The capability package owns the shared API; the provider adapter owns the
+vendor SDK, credentials, transport, and provider-specific behavior. This is a design direction, not
+a universal plugin-to-plugin contract supplied by Core. The project catalog provides planned
+package names; it does not by itself define their APIs or mean they are implemented.
 
 ## Package shape
 
-Use a dedicated distribution such as `orbit-database-postgres` and declare the `orbit.plugins`
-entry point in its package metadata. Pin the supported Core API range, expose a typed configuration
-model, and keep the import path free of network or filesystem side effects. Discovery imports code,
-so the deployment environment must treat enabled plugin packages as trusted code.
+The current Core host supports Python plugins: use a dedicated distribution and declare the
+`orbit.plugins` entry point in its package metadata. Pin the supported Core API range, expose a
+typed configuration model, and keep the import path free of network or filesystem side effects.
+Discovery imports code, so the deployment environment must treat enabled plugin packages as
+trusted code. If a capability package defines a separate provider-adapter contract, document that
+contract and its version range independently; Core's plugin API version does not version
+capability-specific APIs.
+
+Multi-language plugins remain a project goal, not a currently supported runtime feature. Do not
+assume this in-process Python protocol can be implemented directly by Rust, C++, Go, or
+JavaScript/TypeScript. A future language-neutral host boundary needs its own versioning, lifecycle,
+message or ABI contract, failure behavior, and security model before such plugins can be authored.
 
 ## Registration and setup
 
 Implement `PluginContract` and provide stable metadata: name, identifier, plugin API version,
 semantic version, capabilities, required dependencies, optional dependencies, and required
-capabilities. In `setup(application)`, register providers, services, routes, event handlers,
-health checks, and admin contributions. Setup must be deterministic and must not open connections
-or launch tasks; defer resource acquisition to lifecycle hooks.
+capabilities. `activate()` and `deactivate()` are required lifecycle hooks. The synchronous
+`setup(application)` hook is optional: implement it only when the plugin contributes providers,
+services, routes, event handlers, health checks, or admin views. Setup must be deterministic and
+must not open connections or launch tasks; defer resource acquisition to lifecycle hooks. The
+convenience `Plugin` base class supplies a no-op setup hook for subclasses to override. A
+provider-specific integration should also state which capability-level adapter contract it
+implements and how compatibility is tested.
 
 ## Lifecycle
 
@@ -37,9 +55,11 @@ values in exceptions, logs, metrics, or admin responses.
 ## Health, resilience, and observability
 
 Expose liveness and readiness checks that reflect the provider's actual ability to serve requests.
-Use Core deadlines, retry, circuit-breaker, and bulkhead primitives. Classify transient failures
-without retrying cancellation or non-idempotent writes blindly. Register bounded metrics and spans
-with stable names and low-cardinality labels; export them through a telemetry plugin.
+Core bounds its own lifecycle and request work. Application-level retry, deadline,
+circuit-breaker, and bulkhead policies are optional in the separate `orbit-resilience` package.
+Classify transient failures without retrying cancellation or non-idempotent writes blindly.
+Register bounded metrics and spans with stable names and low-cardinality labels; export them
+through a telemetry plugin.
 
 ## Required tests
 

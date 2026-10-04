@@ -29,14 +29,15 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from types import MappingProxyType
-from typing import Any, cast
+from typing import cast
 
 from pydantic import BaseModel
 
 from orbit._limits import _MAX_CORE_CAPACITY
 from orbit.admin.contracts import AdminContribution
 from orbit.admin.models import AdminAuditRecord
-from orbit.config import ApplicationConfig, Config, ConfigWatcher
+from orbit.config import ApplicationConfig, Config
+from orbit.config.contracts import ConfigurationWatcher
 from orbit.container import Container, ProviderResolution
 from orbit.diagnostics.diagnostics import Diagnostics
 from orbit.errors import ErrorCategory, LifecycleError, OrbitProblem
@@ -89,7 +90,7 @@ class Application:
         self._detached_admin_inspections: dict[str, asyncio.Task[BaseModel]] = {}
         self._children: dict[str, Application] = {}
         self._parent: Application | None = None
-        self._config_watchers: list[ConfigWatcher[Any]] = []
+        self._config_watchers: list[ConfigurationWatcher] = []
         self._store = StateStore(ApplicationState(application_id=config.id))
         self.state = State(self._store)
         self._namespaces: dict[str, StateNamespace] = {}
@@ -205,8 +206,8 @@ class Application:
         # composition attempt cannot strand the child under a partially mutated parent.
         child._parent = self  # noqa: SLF001 - both sides are the same Core owner model.
 
-    def register_config_watcher(self, watcher: ConfigWatcher[Any]) -> None:
-        """Register a configuration watcher owned by this application's lifecycle."""
+    def register_config_watcher(self, watcher: ConfigurationWatcher) -> None:
+        """Register an optional configuration observer under application lifecycle ownership."""
         self.lifecycle.require(Phase.CREATED)
         if not callable(getattr(watcher, "start", None)) or not callable(
             getattr(watcher, "stop", None)
@@ -248,9 +249,8 @@ class Application:
                 "/health/ready",
                 "/admin",
                 "/openapi.json",
-                "/metrics",
             } or (route.metadata.path.startswith("/admin/")):
-                raise ValueError("The /admin and /health endpoints are reserved for Core.")
+                raise ValueError("This path is reserved for a Core-owned endpoint.")
             if route.metadata.service_id is not None and route.metadata.service_id not in ids:
                 raise ValueError(f"Route {route.metadata.name} belongs to an unknown service.")
 

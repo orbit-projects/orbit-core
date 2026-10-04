@@ -35,6 +35,8 @@ Loader boundaries validate the model class, file path, prefix, mapping types, st
 entries, and bounded recursive input work while detaching each caller-owned mapping in one pass;
 malformed, cyclic, or changing operator input becomes a redacted `ConfigurationError`
 rather than an incidental Python attribute/type error.
+`MAX_CONFIG_FILE_BYTES` and `MAX_CONFIG_PREFIX_LENGTH` expose the loader's public input ceilings
+to optional configuration tools so they can enforce the same bounds at construction.
 
 Environment names use `ORBIT_` by default, with double underscores for nested fields.
 For example, `ORBIT_DATABASE__HOST` targets `database.host`. JSON arrays and objects are
@@ -97,15 +99,8 @@ Secret-manager integrations and live distributed
 configuration remain adapter responsibilities.
 Changes to `ApplicationConfig` require composing a new application.
 
-`ConfigWatcher` provides an explicit async polling boundary for a TOML extension section. It
-records file metadata plus a bounded content digest, applies only successfully validated and observer-approved
-changes, validates the initial observation without mutating the already-composed section, and
-retains the previous good section when a file is temporarily invalid or missing.
-Its `Config` owner, section identity, polling interval, prefix, file-size limit, watched file, and
-model class are validated at construction. Start and stop operations are serialized for one
-watcher, so a pre-start cancellation or concurrent restart cannot replace one task handle with
-multiple polling tasks. `stop()` waits for polling cleanup and propagates caller cancellation after cleanup completes. `last_error` retains only a
-sanitized exception type summary; file paths, configuration values, and observer messages are not
-exposed through the watcher inspection API.
-
-Tests: `tests/unit/config/test_loading.py` and `test_structured_environment.py`.
+File watching is optional and is not built into Core. The `ConfigurationWatcher` lifecycle
+protocol lets a separately installed tool register a watcher whose `start()` and `stop()` methods
+are owned by the application lifecycle. `orbit-devtools` provides a TOML polling implementation;
+see its package documentation for behavior and installation. Core configuration loading and
+atomic `Config.reload_section()` remain usable without filesystem polling.

@@ -61,6 +61,12 @@ SHA-256 checksums, and request GitHub build provenance for the uploaded artifact
 ruleset check proves only that the configured workflow passed; it does not certify a provider
 plugin, cloud deployment, or production workload.
 
+The local workflow-policy checker also requires explicit top-level token permissions, rejects
+`write-all` and workflow-level write permissions (including YAML flow-style declarations), and
+requires every checkout action to disable persisted Git credentials. Elevated release and security
+permissions should stay scoped to the job that needs them, with job timeouts and immutable action
+SHA pins retained as additional supply-chain controls.
+
 ## Contributor expectations
 
 Every pull request should identify the owning Core boundary and include the corresponding tests,

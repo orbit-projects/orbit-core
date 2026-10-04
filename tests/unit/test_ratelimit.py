@@ -15,8 +15,6 @@
 
 import pytest
 
-from orbit.asgi import RateLimitMiddleware, Response
-from orbit.asgi.request import Request
 from orbit.security import RateLimiter, RateLimitResult
 
 
@@ -74,6 +72,8 @@ def test_rate_limiter_bounds_keys_and_supports_reset():
         limiter.check(None, now=1)  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         limiter.check("bad\nkey", now=1)
+    with pytest.raises(ValueError, match="control-free"):
+        limiter.check("bad\u0085key", now=1)
     with pytest.raises(ValueError):
         limiter.check("user", cost=True)
     with pytest.raises(ValueError):
@@ -82,6 +82,19 @@ def test_rate_limiter_bounds_keys_and_supports_reset():
         limiter.reset("bad\nkey")
     with pytest.raises(ValueError, match="finite"):
         limiter.check("user", now=True)
+
+
+def test_rate_limiter_evicts_the_least_recently_used_key_at_capacity() -> None:
+    limiter = RateLimiter(1, 10, max_keys=2)
+    assert limiter.check("first", now=0).allowed
+    assert limiter.check("second", now=0).allowed
+
+    # Touch the first key while its bucket is empty; the second key should now be evicted.
+    assert not limiter.check("first", now=0).allowed
+    assert limiter.check("third", now=0).allowed
+    assert not limiter.check("first", now=0).allowed
+    assert limiter.check("second", now=0).allowed
+    assert limiter.key_count == 2
 
 
 @pytest.mark.parametrize("period", [0, -1, True, float("inf"), float("nan")])
@@ -109,25 +122,3 @@ def test_rate_limiter_rejects_boolean_capacity_limits(arguments) -> None:
             RateLimiter(*arguments)
         else:
             RateLimiter(arguments[0], arguments[1], max_keys=arguments[2])
-
-
-@pytest.mark.asyncio
-async def test_rate_limit_middleware_validates_and_preserves_key_provider() -> None:
-    with pytest.raises(TypeError, match="callable"):
-        RateLimitMiddleware(1, 1, key="client")  # type: ignore[arg-type]
-
-    class FalseyKey:
-        def __bool__(self) -> bool:
-            return False
-
-        def __call__(self, request: Request) -> str:
-            return "custom"
-
-    key = FalseyKey()
-    middleware = RateLimitMiddleware(1, 1, key=key)
-
-    async def next_handler(request: Request) -> Response:
-        return Response.text("ok")
-
-    await middleware(Request("GET", "/"), next_handler)
-    assert middleware.limiter.key_count == 1

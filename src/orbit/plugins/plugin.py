@@ -24,12 +24,18 @@ if TYPE_CHECKING:
 
 
 class Plugin:
-    """Extend Core through explicit composition; concrete provider logic stays outside Core."""
+    """Convenience base class for plugins with optional composition-time setup.
+
+    Subclasses may override ``setup`` to register Core-owned services, providers, routes, or
+    subscriptions. Implementations that only need lifecycle hooks can satisfy
+    :class:`orbit.plugins.PluginContract` directly without inheriting this class.
+    Concrete provider logic stays outside Core.
+    """
 
     metadata: PluginMetadata
 
     def setup(self, application: Application) -> None:
-        """Register services, providers, routes and subscriptions before composition freezes."""
+        """Optionally register contributions before application composition freezes."""
 
     async def activate(self) -> None:
         """Acquire plugin resources before service initialization."""

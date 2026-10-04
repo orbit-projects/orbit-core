@@ -1,10 +1,22 @@
 # Development
 
+Track stabilization work using the evidence-based local and external checkpoints in
+[`stabilization.md`](stabilization.md). Keep these pass counts separate from the weighted stable
+release gate in [`completion.md`](completion.md).
+
 Orbit Core changes are changes to a public orchestration contract. Identify the owning boundary
 before editing (application, container, plugin, adapter, ASGI, or observability), document lifecycle
 and failure semantics, and keep provider SDKs in plugin packages.
 
-Install the locked development environment and run the same checks as CI:
+The Core development dependency group resolves the separate `orbit-testing` package from
+`../orbit-testing`. Check out that repository beside Core before syncing; it is a development-only
+dependency and is not installed for applications using the Core wheel. CI supplies the same sibling
+workspace layout by checking out both repositories.
+
+Install the locked development environment and run the same checks as CI. It includes the
+production `server` extra so the opt-in Gunicorn/Uvicorn worker tests can run. For ordinary local
+development outside this full test environment, use `--extra development-server` to install only
+Uvicorn.
 
 ```bash
 uv sync --frozen --extra dev --extra server
@@ -76,13 +88,12 @@ Every behavior change should include a focused regression test for cancellation,
 startup, resource cleanup, concurrency, or redaction when those guarantees are affected. Run the
 real hosting test when changing worker, signal, or reload behavior.
 
-Use `orbit.testing.TestClient` as an async context manager around a freshly composed ASGI
-application. It owns real startup/shutdown messages, validates response framing, preserves
-repeated request headers, applies Core's request-header count and byte limits while copying
-caller input, applies Core's path and query byte limits before URL normalization, and translates
-encoded paths as an ASGI host would. Each client
-is single-use. `lifespan_timeout` controls how long the harness waits for protocol progress;
-exceptions from the lifespan task surface immediately.
+Install the separate `orbit-testing` workspace for in-process ASGI tests, then use
+`orbit_testing.TestClient` as an async context manager around a freshly composed application. It
+owns real startup/shutdown messages, validates response framing, preserves repeated request
+headers, applies Core's public request/header/path/query limits, and translates encoded paths as an
+ASGI host would. Each client is single-use. `lifespan_timeout` bounds protocol waits; failures
+surface immediately. Install it in the workspace with `python -m pip install -e ../orbit-testing`.
 
 See [operations](operations.md) for hosting and observability, [documentation conventions](documentation.md)
 for source and Markdown standards, [public API stability](api-stability.md) for compatibility and

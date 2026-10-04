@@ -7,8 +7,20 @@ telemetry vendors. Those capabilities are installed as plugins and adapters agai
 
 The project's complete architectural direction is recorded in the [project charter](docs/architecture/project-charter.md).
 Orbit Core is one foundational framework unit with three related surfaces: the web runtime, the
-first-class Admin Panel, and the operator CLI. Orbit owns a small provider-neutral ASGI and routing
-boundary. Development uses Uvicorn directly; production uses Gunicorn with the Uvicorn worker.
+first-class Admin surface, and the operator CLI. Core's opt-in Admin surface is a protected HTML
+overview plus typed inspection and operational endpoints; it is not a general business-data CRUD or
+analytics dashboard. That richer `orbit-admin` capability is planned as a separately installed
+package and is not implemented in the current workspaces. Orbit owns a small provider-neutral ASGI
+and routing boundary. Development uses Uvicorn directly; production uses Gunicorn with the Uvicorn worker.
+The [native ASGI decision](docs/architecture/adr/0005-native-asgi-boundary.md) records why Core
+owns this boundary rather than depending on another web framework.
+
+Optional capability packages and provider adapters are separate distributions and repositories:
+they are not bundled into the `orbit-core` package, installed as its dependencies, or activated
+implicitly. Install only the packages an application chooses to use. Deliberate Core baselines are
+limited to universal orchestration/security contracts and small built-in behavior such as
+stdlib-backed SQLite and explicitly enabled static-user Basic Auth; provider integrations and
+advanced security remain optional packages.
 
 This boundary is the central design constraint: Core coordinates a capability, while a plugin owns
 the provider-specific implementation. A deployment can therefore replace a provider without
@@ -16,12 +28,16 @@ changing application lifecycle or business code.
 
 ## Development
 
-Python 3.11–3.14 is supported by the configured CI matrix. Create the development environment
-from the committed lockfile:
+Python 3.11–3.14 is supported by the configured CI matrix. Core tests use the separately maintained
+`orbit-testing` package. Check out that repository as a sibling at `../orbit-testing` before syncing
+the development environment; the locked dev dependency resolves from that local path. It is not a
+runtime dependency of `orbit-core`.
+
+Then create the environment from the committed lockfile:
 
 ```bash
 python -m pip install uv==0.12.13
-uv sync --frozen --extra dev --extra server
+uv sync --frozen --extra dev --extra development-server
 uv lock --check
 uv run --no-sync pytest --cov=orbit
 uv run --no-sync ruff check src tests scripts examples
@@ -49,7 +65,8 @@ runtime = Runtime(application)
 Save this as `app.py`, then run `uv run --no-sync orbit serve app:runtime`.
 The runtime owns startup and shutdown through ASGI lifespan. The hosting server owns sockets,
 TLS and worker processes. Routes and providers contributed by plugin setup are included before
-composition freezes.
+composition freezes. Production deployments should instead install the `server` extra to add
+Gunicorn and `uvicorn-worker` for supervised multi-worker hosting.
 
 ## What Core guarantees
 
@@ -74,6 +91,15 @@ Plugins register services, routes, providers, configuration, health checks, even
 admin views during composition. Core validates plugin identity, API compatibility, dependencies,
 capabilities, enablement, and cleanup before the application enters its serving phase. See the
 [plugin contract](docs/concepts/plugins.md) before implementing an integration.
+
+`orbit-core` does not bundle optional packages. Current local workspaces include `orbit-data`,
+`orbit-cache`, `orbit-redis`, `orbit-sql`, `orbit-sql-postgres`, `orbit-jwt`, `orbit-security`,
+`orbit-testing`, `orbit-metrics`, `orbit-prometheus`, `orbit-resilience`, `orbit-logging`,
+`orbit-devtools`, `orbit-gateway`, `orbit-kafka`, `orbit-migrations`, `orbit-mongo`,
+`orbit-nats`, `orbit-rabbitmq`, and `orbit-vector`. They are installed separately and remain
+pre-alpha; this is not a claim that the wider plugin catalog is implemented. See
+[Core and plugin ownership](docs/architecture/core-and-plugin-ownership.md)
+for the explicit Core exceptions and package status.
 
 See [architecture](docs/architecture/overview.md), [dependency injection](docs/concepts/dependency-injection.md),
 [lifecycle](docs/concepts/lifecycle.md), [HTTP operation](docs/runtime/asgi.md),
